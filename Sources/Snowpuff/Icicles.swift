@@ -64,6 +64,8 @@ final class Icicles {
     private var random = SystemRandomNumberGenerator()
 
     var isEmpty: Bool { falling.isEmpty && eaves.values.allSatisfy { $0.hanging.allSatisfy { $0.length < 0.3 } } }
+    /// Icicles in the air need a smooth frame rate.
+    var isFalling: Bool { !falling.isEmpty }
     var count: Int { falling.count + eaves.values.reduce(0) { $0 + $1.hanging.count } }
 
     private func rand(_ lower: Float, _ upper: Float) -> Float {
@@ -71,7 +73,8 @@ final class Icicles {
     }
 
     /// Follows the windows on screen. Windows that are gone drop their icicles; those on another Space keep them.
-    func update(_ surfaces: [WindowSurface], interval: Float, keep: Set<CGWindowID>) {
+    /// `sliding` is a whole Space sliding past: the windows move without being moved, so nothing breaks.
+    func update(_ surfaces: [WindowSurface], interval: Float, keep: Set<CGWindowID>, sliding: Bool) {
         guard enabled else { return }
         var seen = Set<CGWindowID>()
         for surface in surfaces where !surface.isDock {
@@ -79,26 +82,36 @@ final class Icicles {
             let frame = surface.frame
             let occluders = surface.eaveBlockers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
             if var eave = eaves[surface.id] ?? away.removeValue(forKey: surface.id) {
-                let moved = SIMD2(Float(frame.minX - eave.frame.minX), Float(frame.minY - eave.frame.minY))
-                let velocity = moved / max(interval, 1.0 / 120)
-                let jolt = simd_length(velocity - eave.velocity)
-                let speed = simd_length(velocity)
-                if frame.width != eave.frame.width {
-                    // A narrower window loses the icicles past its new edge.
-                    let width = Float(frame.width)
-                    for icicle in eave.hanging where icicle.x > width - 14 {
-                        drop(icicle, from: eave, velocity: velocity)
+                let old = eave.frame
+                let resized = frame.width != old.width || frame.height != old.height
+                if frame.width != old.width {
+                    // Icicles keep to the edge that stays put: dragging the left edge slides them with the right one.
+                    if abs(frame.maxX - old.maxX) < 0.5 {
+                        let shift = Float(frame.minX - old.minX)
+                        for i in eave.hanging.indices { eave.hanging[i].x -= shift }
                     }
-                    eave.hanging.removeAll { $0.x > width - 14 }
+                    let width = Float(frame.width)
+                    let outside = eave.hanging.filter { $0.x < 14 || $0.x > width - 14 }
+                    for icicle in outside { drop(icicle, at: frame, velocity: .zero) }
+                    eave.hanging.removeAll { $0.x < 14 || $0.x > width - 14 }
                 }
-                if speed > 1 || jolt > 1 {
+                // A poll after a long quiet spell means the window was at rest until now.
+                let previous = interval > 0.12 ? SIMD2<Float>(repeating: 0) : eave.velocity
+                let moved = SIMD2(Float(frame.minX - old.minX), Float(frame.minY - old.minY))
+                let raw = moved / max(interval, 1.0 / 120)
+                // The window list reports a dragged window unevenly; smoothing keeps a steady drag from reading as jolts.
+                let velocity = previous + (raw - previous) * 0.4
+                if !sliding && !resized {
+                    let jolt = simd_length(velocity - previous) / max(interval, 1.0 / 120) * 0.016
+                    let force = max(simd_length(velocity) * 0.7, jolt)
                     // Long ones snap first: a sharp jerk or a shake breaks them, a slow glide doesn't.
-                    let snapped = eave.hanging.filter { $0.length > 2 && max(speed * 0.8, jolt) > 2600 - $0.length * 55 }
-                    for icicle in snapped { drop(icicle, from: eave, velocity: velocity) }
-                    eave.hanging.removeAll { $0.length > 2 && max(speed * 0.8, jolt) > 2600 - $0.length * 55 }
+                    let snaps: (Hanging) -> Bool = { $0.length > 2 && force > 2400 - $0.length * 50 }
+                    let snapped = eave.hanging.filter(snaps)
+                    for icicle in snapped { drop(icicle, at: old, velocity: velocity) }
+                    eave.hanging.removeAll(where: snaps)
                 }
                 eave.frame = frame
-                eave.velocity = velocity
+                eave.velocity = sliding ? .zero : velocity
                 eave.occluders = occluders
                 eaves[surface.id] = eave
             } else {
@@ -111,7 +124,7 @@ final class Icicles {
                 away[id] = eave
             } else {
                 for icicle in eave.hanging where icicle.length > 1.5 {
-                    drop(icicle, from: eave, velocity: SIMD2(0, -60))
+                    drop(icicle, at: eave.frame, velocity: SIMD2(0, -60))
                 }
             }
             eaves.removeValue(forKey: id)
@@ -121,7 +134,7 @@ final class Icicles {
 
     func dropAll() {
         for eave in eaves.values {
-            for icicle in eave.hanging where icicle.length > 1.5 { drop(icicle, from: eave, velocity: .zero) }
+            for icicle in eave.hanging where icicle.length > 1.5 { drop(icicle, at: eave.frame, velocity: .zero) }
         }
         eaves.removeAll()
         away.removeAll()
@@ -206,10 +219,10 @@ final class Icicles {
         return groups
     }
 
-    private func drop(_ icicle: Hanging, from eave: Eave, velocity: SIMD2<Float>) {
-        guard icicle.length > 1 else { return }
+    private func drop(_ icicle: Hanging, at frame: CGRect, velocity: SIMD2<Float>) {
+        guard icicle.length > 1, falling.count < 400 else { return }
         falling.append(Falling(
-            position: SIMD2(Float(eave.frame.minX) + icicle.x, Float(eave.frame.minY)),
+            position: SIMD2(Float(frame.minX) + icicle.x, Float(frame.minY)),
             velocity: velocity * 0.6 + SIMD2(rand(-40, 40), rand(-20, 30)),
             length: icicle.length,
             width: icicle.width,

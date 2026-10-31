@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        openAtLoginOnFirstRun()
         statusItem = makeStatusItem()
         updateStatusIcon()
         setUpSound()
@@ -120,6 +121,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         welcome.show()
     }
 
+    /// Snow that only falls when remembered isn't much of a mood: on the first run Snowpuff adds itself to the
+    /// login items; the menu turns that off.
+    private func openAtLoginOnFirstRun() {
+        guard !UserDefaults.standard.bool(forKey: "addedToLoginItems") else { return }
+        UserDefaults.standard.set(true, forKey: "addedToLoginItems")
+        guard SMAppService.mainApp.status != .enabled else { return }
+        do {
+            try SMAppService.mainApp.register()
+        } catch {
+            NSLog("Snowpuff: could not add a login item: \(error)")
+        }
+    }
+
     // MARK: - Sound, breath and calls
 
     private func setUpSound() {
@@ -130,7 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, !hushed else { return }
             for snow in screens { snow.simulation.breathe(strength) }
         }
-        if Preferences.puff { breath.start() }
+        if Preferences.puff {
+            // Access taken away in System Settings since: the menu shouldn't claim it is on.
+            breath.start { started in if !started { Preferences.puff = false } }
+        }
+        calls.listeningItself = { [weak self] in self?.breath.isListening ?? false }
         calls.changed = { [weak self] inCall in self?.setHushed(inCall) }
         if Preferences.quietOnCalls { calls.start() }
     }
@@ -147,7 +165,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setHushed(_ on: Bool) {
         guard hushed != on else { return }
         hushed = on
-        ambience.muted = on
         if on {
             if breath.isListening { breath.stop() }
         } else if Preferences.puff {
@@ -425,7 +442,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateActivity() {
-        let awake = !screensAsleep && !screenLocked && !sessionInactive && !hushed
+        let present = !screensAsleep && !screenLocked && !sessionInactive
+        // Nobody to hear it while the Mac sleeps, is locked or another user is on it.
+        ambience.muted = hushed || !present
+        let awake = present && !hushed
         for snow in screens {
             snow.setActive(awake && snow.window.occlusionState.contains(.visible))
         }

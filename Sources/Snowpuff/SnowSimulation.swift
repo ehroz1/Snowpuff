@@ -64,8 +64,6 @@ private struct Grain {
     var lump: Float = 0
     /// Powder carried off by a gust: it rides the wind off the screen instead of settling.
     var blown = false
-    /// Seconds it still clings to the screen where a snowball hit it, sagging, before it falls.
-    var stuck: Float = 0
 }
 
 /// Powder thrown up by a lump bursting: it billows, slows in the air and fades without settling.
@@ -997,13 +995,6 @@ final class SnowSimulation {
         var i = grains.count - 1
         while i >= 0 {
             var grain = grains[i]
-            if grain.stuck > 0 {
-                grain.stuck -= dt
-                grain.position.y -= 5 * dt
-                grains[i] = grain
-                i -= 1
-                continue
-            }
             let previousY = grain.position.y
             if grain.blown {
                 // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
@@ -1202,14 +1193,6 @@ final class SnowSimulation {
                     flakes[i].blown = gust.direction
                 }
             }
-        }
-        // Snow stuck on the screen is torn off.
-        for i in grains.indices where grains[i].stuck > 0 && (finish || gust.calm || (front - grains[i].position.x) * gust.direction > 0) {
-            grains[i].stuck = 0
-            guard !gust.calm else { continue }
-            grains[i].blown = true
-            grains[i].area = 0
-            grains[i].velocity = SIMD2(gust.direction * random.range(800, 1600), random.range(60, 300))
         }
         for layer in layers {
             var dust: Float = 0

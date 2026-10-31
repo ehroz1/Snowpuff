@@ -6,6 +6,9 @@ import CoreMediaIO
 /// it takes a few seconds of use to count, and a few without to end, so a quick dictation doesn't flicker it.
 final class CallMonitor {
     var changed: (Bool) -> Void = { _ in }
+    /// Whether the app itself is listening to the microphone: before macOS 14.2 that can't be told apart from
+    /// another app, so the microphone is left out of the check then.
+    var listeningItself: () -> Bool = { false }
     private(set) var inCall = false
     private var timer: Timer?
     private var busySince: Date?
@@ -102,6 +105,7 @@ final class CallMonitor {
             }
             return false
         }
+        guard !listeningItself() else { return false }
         var device = AudioObjectID(0)
         var deviceSize = UInt32(MemoryLayout<AudioObjectID>.size)
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)

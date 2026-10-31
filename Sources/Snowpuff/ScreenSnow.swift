@@ -51,7 +51,7 @@ final class ScreenSnow {
             let update = tracker.poll(now: now, eager: NSEvent.pressedMouseButtons != 0)
             simulation.windowFrames = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
             if let update {
-                icicles.update(update.surfaces, interval: update.interval, keep: update.parked.union(update.elsewhere))
+                icicles.update(update.surfaces, interval: update.interval, keep: update.parked.union(update.elsewhere), sliding: update.sliding)
             }
             return update
         }

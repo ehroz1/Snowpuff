@@ -132,8 +132,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             ) || changed
         }
         let hearthMoved = updateHearth(dt: dt)
-        // The lantern follows the cursor even over snow that lies still.
-        let lanternMoved = (ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5) || hearthMoved
+        // The lantern follows the cursor even over snow that lies still; the window glow and falling icicles need a smooth rate too.
+        let lanternMoved = (ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5) || hearthMoved || (icicles?.isFalling ?? false)
         lanternAt = cursor
         let fastest = budget == .full ? interactiveFrameRate : min(60, interactiveFrameRate)
         // 24 only where it divides the display's rate evenly; elsewhere it would judder.

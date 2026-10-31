@@ -8,6 +8,7 @@ final class Breath {
     var puffed: (Float) -> Void = { _ in }
     private(set) var isListening = false
     private var engine: AVAudioEngine?
+    private var configurationObserver: NSObjectProtocol?
     private let detector = Detector()
 
     /// Asks for the microphone the first time; `completion` says whether listening started.
@@ -26,6 +27,8 @@ final class Breath {
     }
 
     func stop() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
@@ -54,6 +57,14 @@ final class Breath {
         }
         self.engine = engine
         isListening = true
+        // Another microphone chosen or plugged in: listen to the new one.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            guard let self, isListening else { return }
+            stop()
+            _ = begin()
+        }
         return true
     }
 }

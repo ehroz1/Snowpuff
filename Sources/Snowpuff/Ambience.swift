@@ -33,15 +33,25 @@ final class Ambience {
     }
 
     private var engine: AVAudioEngine?
+    private var configurationObserver: NSObjectProtocol?
+    private var stopTimer: Timer?
     private let synth = Synth()
 
+    private var audible: Bool { mode != .off && !muted }
+
     private func apply() {
-        synth.wind = mode == .wind || mode == .both
-        synth.fire = mode == .fireplace || mode == .both
-        if mode == .off || muted {
-            stop()
-        } else {
+        synth.wind = audible && (mode == .wind || mode == .both)
+        synth.fire = audible && (mode == .fireplace || mode == .both)
+        stopTimer?.invalidate()
+        stopTimer = nil
+        if audible {
             start()
+        } else if engine != nil {
+            // Let the sound fade out before the engine stops, so it never ends on a click.
+            stopTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
+                guard let self, !audible else { return }
+                stop()
+            }
         }
     }
 
@@ -67,12 +77,22 @@ final class Ambience {
         do {
             try engine.start()
             self.engine = engine
+            // Headphones plugged in or another output chosen: the engine stops, so build it again for the new device.
+            configurationObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                stop()
+                if audible { start() }
+            }
         } catch {
             NSLog("Snowpuff: ambience failed to start: \(error)")
         }
     }
 
     private func stop() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
         engine?.stop()
         engine = nil
     }
