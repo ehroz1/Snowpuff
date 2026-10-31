@@ -1,0 +1,33 @@
+{
+  "name": "Snowpuff — Cocoa",
+  "description": "Базовая палитра приложения: тёплый вечер, какао, свет из окна, молочный снег",
+  "colors": {
+    "cocoa-900": "#1E110B",
+    "cocoa-800": "#2A170E",
+    "cocoa-700": "#4A2718",
+    "cocoa-500": "#7D4426",
+    "frame":     "#1A0C08",
+    "curtain":   "#9C3A28",
+    "lamp-dark": "#6B2F1D",
+    "glow-100":  "#FFF6DC",
+    "glow-300":  "#FFD27E",
+    "glow-500":  "#E98F3E",
+    "beam":      "#FFD890",
+    "snow":      "#FFF8EE",
+    "snow-warm": "#FFF3E2",
+    "snow-shadow": "#D9A98E",
+    "snow-rim":  "#FFCF94"
+  },
+  "usage": {
+    "background": "градиент cocoa-900 → cocoa-700 → cocoa-500 сверху вниз",
+    "accent": "glow-300 (тёплый свет, активные состояния, переключатели)",
+    "text-on-dark": "snow",
+    "text-secondary-on-dark": "snow с прозрачностью 60%",
+    "snow-particles": "snow-warm; в зоне тёплого света — glow-100"
+  },
+  "effects": {
+    "vignette": "радиальная, края cocoa-900 с прозрачностью ~60%",
+    "film-grain": "очень лёгкое зерно, 5–8% прозрачности",
+    "glow": "мягкое свечение glow-300 вокруг источников света"
+  }
+}
