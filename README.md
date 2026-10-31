@@ -13,8 +13,17 @@
 - Палитра «Cocoa», иконки Snowpuff, меню на русском/английском по языку системы.
 
 ## Сборка
+
+macOS:
 ```sh
 ./build.sh           # build/Snowpuff.app
 ./build.sh install   # + установить в /Applications и запустить
 ```
+
+Windows (собирается на Mac, нужны `rustup target add x86_64-pc-windows-gnu` и `brew install mingw-w64`):
+```sh
+windows/build.sh     # dist/Snowpuff-Setup.exe
+```
+
+Физика снега, сосульки, синтез звука и распознавание дуновения для Windows лежат в общем `core/` (Rust, `cargo test` в `core/`).
 Ассеты бренда и исходный промт — в `Assets/`.
