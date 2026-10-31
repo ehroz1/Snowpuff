@@ -1,17 +1,20 @@
 #!/bin/zsh
-# Builds build/Snowpuff.app for this Mac (Apple silicon), signed ad hoc for local use.
+# Builds build/Snowpuff.app for Apple silicon and Intel Macs, signed ad hoc.
 # ./build.sh install  — also copies it to /Applications and launches it.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-flags=(-c release)
-swift build "${flags[@]}"
-products="$(swift build "${flags[@]}" --show-bin-path)"
+# One build per architecture, joined into one binary: a universal build needs Xcode, separate ones don't.
+binaries=()
+for arch in arm64 x86_64; do
+    swift build -c release --arch $arch
+    binaries+=("$(swift build -c release --arch $arch --show-bin-path)/Snowpuff")
+done
 
 app=build/Snowpuff.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$products/Snowpuff" "$app/Contents/MacOS/"
+lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/Snowpuff"
 cp Resources/Info.plist "$app/Contents/"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
 cp Resources/TrayIcon*.png "$app/Contents/Resources/"

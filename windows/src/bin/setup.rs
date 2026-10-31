@@ -1,9 +1,11 @@
 //! Snowpuff-Setup.exe: the app with a one-card installer in its own style.
-//! `--silent` (or `/S`) installs without showing anything, for package managers.
+//! `--silent` (or `/S`) installs without showing anything, for package managers; `--update`, which the app runs
+//! when it updates itself, also opens the app again.
 
 #![windows_subsystem = "windows"]
 
 use std::cell::RefCell;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -47,6 +49,24 @@ thread_local! {
 fn main() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    // What the app runs when it updates itself: it is closed, replaced and opened again, with nothing to click.
+    if std::env::args().skip(1).any(|argument| argument.eq_ignore_ascii_case("--update")) {
+        let installed = install::install(APP, VERSION);
+        // Whatever happened, the snow comes back: the new version, or the old one if it couldn't be replaced.
+        if let Some(exe) = installed.as_ref().ok().cloned().or_else(install::installed_exe) {
+            install::launch(&exe);
+        }
+        // The downloaded installer has done its job.
+        if let Ok(me) = std::env::current_exe()
+            && me.starts_with(std::env::temp_dir())
+        {
+            let _ = std::process::Command::new("cmd.exe")
+                .raw_arg(format!("/c ping 127.0.0.1 -n 3 >nul & del /q \"{}\"", me.display()))
+                .creation_flags(0x0800_0000)
+                .spawn();
+        }
+        std::process::exit(if installed.is_ok() { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|argument| argument.eq_ignore_ascii_case("--silent") || argument.eq_ignore_ascii_case("/s")) {
         std::process::exit(if install::install(APP, VERSION).is_ok() { 0 } else { 1 });

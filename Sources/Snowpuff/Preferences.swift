@@ -39,6 +39,7 @@ enum Preferences {
     private static let quietOnCallsKey = "quietOnCalls"
     private static let ambienceKey = "ambience"
     private static let ambienceVolumeKey = "ambienceVolume"
+    private static let autoUpdateKey = "autoUpdate"
 
     static func registerDefaults() {
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -55,6 +56,7 @@ enum Preferences {
             quietOnCallsKey: true,
             ambienceKey: 0,
             ambienceVolumeKey: 0.5,
+            autoUpdateKey: true,
         ])
     }
 
@@ -116,6 +118,12 @@ enum Preferences {
     static var ambience: Ambience.Mode {
         get { Ambience.Mode(rawValue: defaults.integer(forKey: ambienceKey)) ?? .off }
         set { defaults.set(newValue.rawValue, forKey: ambienceKey) }
+    }
+
+    /// New versions from GitHub install themselves.
+    static var autoUpdate: Bool {
+        get { defaults.bool(forKey: autoUpdateKey) }
+        set { defaults.set(newValue, forKey: autoUpdateKey) }
     }
 
     static var ambienceVolume: Float {

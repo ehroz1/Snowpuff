@@ -38,6 +38,8 @@ pub struct Settings {
     pub volume: u32,
     /// Whether Snowpuff has added itself to the apps that open at login, which it does once.
     pub login_offered: bool,
+    /// New versions from GitHub install themselves.
+    pub auto_update: bool,
 }
 
 impl Settings {
@@ -60,6 +62,7 @@ impl Settings {
             ambience: read(w!("ambience")).unwrap_or(0).min(3),
             volume: read(w!("ambienceVolume")).unwrap_or(50).clamp(5, 100),
             login_offered: read(w!("loginOffered")).is_some_and(|v| v != 0),
+            auto_update: read(w!("autoUpdate")).is_none_or(|v| v != 0),
         }
     }
 
@@ -80,6 +83,7 @@ impl Settings {
         write(w!("ambience"), self.ambience);
         write(w!("ambienceVolume"), self.volume);
         write(w!("loginOffered"), self.login_offered as u32);
+        write(w!("autoUpdate"), self.auto_update as u32);
     }
 }
 

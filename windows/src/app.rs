@@ -25,6 +25,7 @@ use crate::calls;
 use crate::log;
 use crate::prefs::{self, Settings};
 use crate::snow::{self, Command, Links};
+use crate::update::{self, Release};
 use crate::welcome::{self, Handlers};
 use snowpuff::text::{russian, tr};
 use snowpuff_core::simulation::Snowfall;
@@ -33,6 +34,8 @@ const CLASS: PCWSTR = w!("SnowpuffController");
 const WM_TRAY: u32 = WM_APP + 1;
 /// The microphone couldn't be opened; posted from the ear's thread.
 const WM_DEAF: u32 = WM_APP + 2;
+/// An update check or install finished; posted from its thread with a boxed `Updated`.
+const WM_UPDATE: u32 = WM_APP + 3;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 const ID_SNOWFALL: u32 = 100;
 const ID_SOUND: u32 = 150;
@@ -49,9 +52,19 @@ const ID_ICICLES: u32 = 210;
 const ID_GLOW: u32 = 211;
 const ID_PUFF: u32 = 212;
 const ID_QUIET: u32 = 213;
+const ID_UPDATES: u32 = 214;
+const ID_AUTO_UPDATE: u32 = 215;
+const ID_DONATE: u32 = 216;
+const ID_SITE: u32 = 217;
+const ID_ABOUT: u32 = 218;
 const ID_QUIT: u32 = 299;
 const TIMER_WELCOME: usize = 1;
 const TIMER_CALLS: usize = 2;
+const TIMER_UPDATES: usize = 3;
+/// How often a running Snowpuff looks for a new version.
+const UPDATE_EVERY: u32 = 6 * 60 * 60 * 1000;
+const DONATE: &str = "https://t.me/hhrrzz1";
+const SITE: &str = "https://ehroz.pro";
 /// Volumes the sound menu offers, in percent.
 const VOLUMES: [u32; 4] = [25, 50, 75, 100];
 
@@ -73,6 +86,16 @@ struct App {
     free_checks: u32,
     sound: Sound,
     ear: Option<Ear>,
+    /// A newer version found while automatic updates are off, offered in the menu.
+    update: Option<Release>,
+    /// An update check or download is under way.
+    updating: bool,
+}
+
+/// What an update thread reports back.
+enum Updated {
+    Checked(std::result::Result<Option<Release>, String>),
+    Failed(String),
 }
 
 thread_local! {
@@ -121,6 +144,8 @@ pub fn run() -> Result<()> {
         if settings.quiet_on_calls {
             SetTimer(Some(window), TIMER_CALLS, 2000, None);
         }
+        // The first look for a new version waits until the snow has settled in.
+        SetTimer(Some(window), TIMER_UPDATES, 60_000, None);
         let mut app = App {
             settings,
             commands,
@@ -135,6 +160,8 @@ pub fn run() -> Result<()> {
             free_checks: 0,
             sound: Sound::new(),
             ear: None,
+            update: None,
+            updating: false,
         };
         refresh_sound(&mut app);
         if app.settings.puff {
@@ -191,6 +218,16 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
         }
         WM_CLOSE => {
             quit(window);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_UPDATES => {
+            unsafe { SetTimer(Some(window), TIMER_UPDATES, UPDATE_EVERY, None) };
+            check_for_updates(window, false);
+            LRESULT(0)
+        }
+        WM_UPDATE => {
+            let result = unsafe { Box::from_raw(lparam.0 as *mut Updated) };
+            updated(window, *result, wparam.0 != 0);
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == TIMER_CALLS => {
@@ -350,7 +387,11 @@ fn append(menu: HMENU, flags: MENU_ITEM_FLAGS, id: u32, title: &str) {
 }
 
 fn show_menu(window: HWND, x: i32, y: i32) {
-    let Some(settings) = APP.with_borrow(|app| app.as_ref().map(|app| app.settings)) else { return };
+    let Some((settings, pending, updating)) =
+        APP.with_borrow(|app| app.as_ref().map(|app| (app.settings, app.update.as_ref().map(|r| r.version.clone()), app.updating)))
+    else {
+        return;
+    };
     let login = prefs::opens_at_login();
     let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
     let enabled = |on: bool| if on { MF_ENABLED } else { MF_GRAYED };
@@ -395,6 +436,19 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         append(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS, tr("Show in Screenshots", "Показывать на скриншотах"));
         append(menu, MF_STRING | checked(login), ID_LOGIN, tr("Open at Login", "Открывать при входе"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let updates = match (&pending, updating) {
+            (_, true) => tr("Updating…", "Обновление…").to_string(),
+            (Some(version), _) => if russian() { format!("Обновить до {version}") } else { format!("Update to {version}") },
+            (None, _) => tr("Check for Updates…", "Проверить обновления…").to_string(),
+        };
+        append(menu, MF_STRING | enabled(!updating), ID_UPDATES, &updates);
+        append(menu, MF_STRING | checked(settings.auto_update), ID_AUTO_UPDATE, tr("Update Automatically", "Обновлять автоматически"));
+        let about = if russian() { format!("Snowpuff {} на GitHub", update::VERSION) } else { format!("Snowpuff {} on GitHub", update::VERSION) };
+        append(menu, MF_STRING, ID_ABOUT, &about);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        append(menu, MF_STRING, ID_DONATE, tr("Support the Author ♥", "Поддержать автора ♥"));
+        append(menu, MF_STRING, ID_SITE, tr("More Apps — ehroz.pro", "Другие приложения — ehroz.pro"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         append(menu, MF_STRING, ID_QUIT, tr("Quit Snowpuff", "Выйти из Snowpuff"));
 
         // A tray menu only closes on an outside click while its owner is in the foreground.
@@ -411,6 +465,21 @@ fn choose(window: HWND, chosen: u32, login: bool) {
     match chosen {
         0 => {}
         ID_QUIT => quit(window),
+        ID_UPDATES => {
+            let pending = APP.with_borrow(|app| app.as_ref().and_then(|app| app.update.clone()));
+            match pending {
+                Some(release) => install_update(window, release, true),
+                None => check_for_updates(window, true),
+            }
+        }
+        ID_AUTO_UPDATE => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.auto_update = !app.settings.auto_update;
+            app.settings.save();
+        }),
+        ID_ABOUT => update::open(&format!("https://github.com/{}", update::REPOSITORY)),
+        ID_DONATE => update::open(DONATE),
+        ID_SITE => update::open(SITE),
         ID_CLEAR => APP.with_borrow(|app| {
             if let Some(app) = app {
                 send(app, Command::ClearSnow(!prefs::animations_enabled()));
@@ -498,6 +567,95 @@ fn choose(window: HWND, chosen: u32, login: bool) {
             refresh_sound(app);
             refresh_icon(window, app);
         }),
+    }
+}
+
+/// Looks for a new version on another thread and reports back with `WM_UPDATE`. `asked` is a check from the menu,
+/// which answers even when there's nothing new.
+fn check_for_updates(window: HWND, asked: bool) {
+    let busy = APP.with_borrow_mut(|app| {
+        let Some(app) = app else { return true };
+        std::mem::replace(&mut app.updating, true)
+    });
+    if busy {
+        return;
+    }
+    let target = window.0 as isize;
+    thread::spawn(move || post_update(target, asked, Updated::Checked(update::check())));
+}
+
+/// Downloads and starts the installer on another thread; it closes this app and opens the new version.
+fn install_update(window: HWND, release: Release, asked: bool) {
+    APP.with_borrow_mut(|app| {
+        if let Some(app) = app {
+            app.updating = true;
+        }
+    });
+    log!("installing {}", release.version);
+    let target = window.0 as isize;
+    thread::spawn(move || {
+        if let Err(error) = update::install(&release) {
+            post_update(target, asked, Updated::Failed(error));
+        }
+    });
+}
+
+fn post_update(target: isize, asked: bool, result: Updated) {
+    let result = Box::new(result);
+    unsafe {
+        let _ = PostMessageW(Some(HWND(target as _)), WM_UPDATE, WPARAM(asked as usize), LPARAM(Box::into_raw(result) as isize));
+    }
+}
+
+fn updated(window: HWND, result: Updated, asked: bool) {
+    let Some((automatic, hushed)) = APP.with_borrow_mut(|app| {
+        let app = app.as_mut()?;
+        app.updating = false;
+        Some((app.settings.auto_update, app.hushed))
+    }) else {
+        return;
+    };
+    match result {
+        Updated::Checked(Ok(Some(release))) => {
+            log!("update available: {}", release.version);
+            if asked {
+                let question = if russian() {
+                    format!("Вышел Snowpuff {}. У тебя {}.\n\nОбновить сейчас? Snowpuff перезапустится через пару секунд.", release.version, update::VERSION)
+                } else {
+                    format!("Snowpuff {} is out. You have {}.\n\nUpdate now? Snowpuff restarts in a couple of seconds.", release.version, update::VERSION)
+                };
+                if message_box(window, &question, MB_YESNO | MB_ICONQUESTION) == IDYES {
+                    install_update(window, release, true);
+                    return;
+                }
+            } else if automatic && !hushed {
+                // A quiet moment: not in the middle of a call.
+                install_update(window, release, false);
+                return;
+            }
+            APP.with_borrow_mut(|app| {
+                if let Some(app) = app {
+                    app.update = Some(release);
+                }
+            });
+        }
+        Updated::Checked(Ok(None)) => {
+            if asked {
+                let text = if russian() {
+                    format!("У тебя последняя версия Snowpuff — {}.", update::VERSION)
+                } else {
+                    format!("Snowpuff {} is the latest version.", update::VERSION)
+                };
+                message_box(window, &text, MB_OK | MB_ICONINFORMATION);
+            }
+        }
+        Updated::Checked(Err(error)) | Updated::Failed(error) => {
+            log!("update failed: {error}");
+            if asked {
+                let text = if russian() { format!("Не получилось обновить Snowpuff.\n\n{error}") } else { format!("Couldn't update Snowpuff.\n\n{error}") };
+                message_box(window, &text, MB_OK | MB_ICONWARNING);
+            }
+        }
     }
 }
 

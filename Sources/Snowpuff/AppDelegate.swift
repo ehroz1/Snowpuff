@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var behindWindowsItem: NSMenuItem!
     private var screenshotsItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var updatesItem: NSMenuItem!
+    private var autoUpdateItem: NSMenuItem!
+    private let updater = Updater()
     private var observers: [NSObjectProtocol] = []
     private var screensAsleep = false
     private var screenLocked = false
@@ -66,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusIcon()
         setUpSound()
         observeSystem()
+        updater.mayInstallQuietly = { [weak self] in !(self?.hushed ?? false) }
+        updater.start()
         if snowfallHeld {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.showWelcome() }
         }
@@ -212,6 +217,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         screenshotsItem = add(tr("Show in Screenshots", "Показывать на скриншотах"), #selector(toggleScreenshots), to: menu)
         loginItem = add(tr("Open at Login", "Открывать при входе"), #selector(toggleOpenAtLogin), to: menu)
         menu.addItem(.separator())
+        updatesItem = add(tr("Check for Updates…", "Проверить обновления…"), #selector(checkForUpdates), to: menu)
+        autoUpdateItem = add(tr("Update Automatically", "Обновлять автоматически"), #selector(toggleAutoUpdate), to: menu)
+        add(tr("Snowpuff \(Updater.version) on GitHub", "Snowpuff \(Updater.version) на GitHub"), #selector(openGitHub), to: menu)
+        menu.addItem(.separator())
+        add(tr("Support the Author ♥", "Поддержать автора ♥"), #selector(openDonation), to: menu)
+        add(tr("More Apps — ehroz.pro", "Другие приложения — ehroz.pro"), #selector(openSite), to: menu)
+        menu.addItem(.separator())
         menu.addItem(withTitle: tr("Quit Snowpuff", "Выйти из Snowpuff"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         item.menu = menu
@@ -266,6 +278,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         behindWindowsItem.state = behindWindows ? .on : .off
         screenshotsItem.state = Preferences.showInScreenshots ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        updatesItem.isEnabled = !updater.isBusy
+        updatesItem.title = updater.isBusy ? tr("Updating…", "Обновление…")
+            : updater.available.map { tr("Update to \($0.version)", "Обновить до \($0.version)") }
+            ?? tr("Check for Updates…", "Проверить обновления…")
+        autoUpdateItem.state = Preferences.autoUpdate ? .on : .off
     }
 
     private func select(_ snowfall: Snowfall) {
@@ -391,6 +408,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             NSLog("Snowpuff: login item change failed: \(error)")
         }
+    }
+
+    @objc private func checkForUpdates() {
+        updater.check(asked: true)
+    }
+
+    @objc private func toggleAutoUpdate() {
+        Preferences.autoUpdate.toggle()
+    }
+
+    @objc private func openGitHub() {
+        open("https://github.com/\(Updater.repository)")
+    }
+
+    @objc private func openDonation() {
+        open("https://t.me/hhrrzz1")
+    }
+
+    @objc private func openSite() {
+        open("https://ehroz.pro")
+    }
+
+    private func open(_ link: String) {
+        if let url = URL(string: link) { NSWorkspace.shared.open(url) }
     }
 
     private static let trayIcon = trayImage("TrayIconTemplate")

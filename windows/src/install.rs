@@ -33,6 +33,12 @@ pub fn installed_version() -> Option<String> {
     read_string(UNINSTALL, w!("DisplayVersion"))
 }
 
+/// Where the installed app is, if it is.
+pub fn installed_exe() -> Option<PathBuf> {
+    let exe = PathBuf::from(read_string(UNINSTALL, w!("InstallLocation"))?).join("Snowpuff.exe");
+    exe.exists().then_some(exe)
+}
+
 /// Puts the app in place and registers it, replacing a running or older copy. Returns where the app went.
 pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     close_running();
@@ -60,7 +66,7 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     write_string(UNINSTALL, w!("Publisher"), "Snowpuff");
     write_string(UNINSTALL, w!("DisplayIcon"), &exe.display().to_string());
     write_string(UNINSTALL, w!("InstallLocation"), &folder.display().to_string());
-    write_string(UNINSTALL, w!("URLInfoAbout"), "https://snowpuff.pages.dev");
+    write_string(UNINSTALL, w!("URLInfoAbout"), "https://github.com/ehroz1/Snowpuff");
     write_string(UNINSTALL, w!("UninstallString"), &format!("{quoted} --uninstall"));
     write_string(UNINSTALL, w!("QuietUninstallString"), &format!("{quoted} --uninstall --silent"));
     write_number(UNINSTALL, w!("NoModify"), 1);
