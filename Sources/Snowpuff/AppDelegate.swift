@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var soundItems: [NSMenuItem] = []
     private var volumeSlider: NSSlider!
     private var quietItem: NSMenuItem!
+    private var snowItem: NSMenuItem!
+    private var autumnItem: NSMenuItem!
     private var behindWindowsItem: NSMenuItem!
     private var screenshotsItem: NSMenuItem!
     private var loginItem: NSMenuItem!
@@ -91,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if let snow = ScreenSnow(screen: screen, device: device, snowOnWindows: { [unowned self] in snowOnWindows }) {
                 snow.simulation.snowfallHeld = snowfallHeld
                 snow.simulation.snowfallReleased = { [weak self] in self?.releaseSnowfall() }
+                snow.autumn = Preferences.autumn
                 snow.apply(power.budget)
                 snow.window.alphaValue = hushed ? 0 : 1
                 screens.append(snow)
@@ -195,12 +198,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
 
-        menu.addItem(.sectionHeader(title: tr("Snowfall", "Снегопад")))
+        menu.addItem(.sectionHeader(title: tr("Intensity", "Интенсивность")))
         snowfallSlider.changed = { [unowned self] in select($0) }
         let sliderItem = NSMenuItem()
         sliderItem.view = snowfallSlider
         menu.addItem(sliderItem)
         menu.addItem(.separator())
+        let modes = NSMenu()
+        modes.autoenablesItems = false
+        snowItem = add(tr("Snow", "Снег"), #selector(chooseMode), to: modes)
+        autumnItem = add(tr("Autumn Leaves", "Осенние листья"), #selector(chooseMode), to: modes)
+        menu.addItem(withTitle: tr("Mode", "Режим"), action: nil, keyEquivalent: "").submenu = modes
         accumulateItem = add(tr("Accumulate", "Сугробы"), #selector(toggleAccumulate), to: menu)
         meltItem = add(tr("Melt Snow", "Таяние"), #selector(toggleMeltSnow), to: menu)
         snowOnWindowsItem = add(tr("Snow on Windows", "Снег на окнах"), #selector(toggleSnowOnWindows), to: menu)
@@ -225,7 +233,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(tr("More Apps — ehroz.pro", "Другие приложения — ehroz.pro"), #selector(openSite), to: menu)
         menu.addItem(.separator())
         menu.addItem(withTitle: tr("Quit Snowpuff", "Выйти из Snowpuff"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-
         item.menu = menu
         return item
     }
@@ -262,12 +269,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         snowfallSlider.snowfall = snowfall
         accumulateItem.state = accumulates ? .on : .off
+        let autumn = Preferences.autumn
+        snowItem.state = autumn ? .off : .on
+        autumnItem.state = autumn ? .on : .off
+        meltItem.title = autumn ? tr("Wither Leaves", "Листья вянут") : tr("Melt Snow", "Таяние")
+        snowOnWindowsItem.title = autumn ? tr("Leaves on Windows", "Листья на окнах") : tr("Snow on Windows", "Снег на окнах")
+        clearItem.title = autumn ? tr("Clear Leaves", "Смести все листья") : tr("Clear Snow", "Смести весь снег")
         meltItem.state = thaws ? .on : .off
         meltItem.isEnabled = accumulates
         snowOnWindowsItem.state = snowOnWindows ? .on : .off
         snowOnWindowsItem.isEnabled = !behindWindows
         iciclesItem.state = Preferences.icicles ? .on : .off
-        iciclesItem.isEnabled = snowOnWindows && !behindWindows
+        iciclesItem.isEnabled = snowOnWindows && !behindWindows && !autumn
         warmGlowItem.state = Preferences.warmGlow ? .on : .off
         warmGlowItem.isEnabled = snowOnWindows && !behindWindows
         clearItem.isEnabled = screens.contains { $0.simulation.hasSnow || $0.simulation.spriteCount > 0 }
@@ -313,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleIcicles() {
         Preferences.icicles.toggle()
-        for snow in screens { snow.icicles.enabled = Preferences.icicles }
+        for snow in screens { snow.icicles.enabled = Preferences.icicles && !Preferences.autumn }
     }
 
     @objc private func toggleWarmGlow() {
@@ -383,10 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleBehindWindows() {
         behindWindows.toggle()
         Preferences.behindWindows = behindWindows
-        for snow in screens {
-            snow.window.behindWindows = behindWindows
-            if behindWindows { snow.dropWindowSnow() }
-        }
+        for snow in screens { snow.window.behindWindows = behindWindows }
     }
 
     @objc private func toggleScreenshots() {
@@ -412,6 +422,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func checkForUpdates() {
         updater.check(asked: true)
+    }
+
+    @objc private func chooseMode(_ sender: NSMenuItem) {
+        let autumn = sender === autumnItem
+        guard autumn != Preferences.autumn else { return }
+        Preferences.autumn = autumn
+        let direction = screens.first?.simulation.breezeDirection ?? -1
+        let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        for snow in screens {
+            snow.simulation.switchMode(autumn: autumn, direction: direction, calm: calm)
+            // Leaves don't grow icicles: what hangs goes with the snow.
+            if calm { snow.icicles.melt() } else { snow.icicles.dropAll() }
+            snow.icicles.enabled = Preferences.icicles && !autumn
+        }
     }
 
     @objc private func toggleAutoUpdate() {

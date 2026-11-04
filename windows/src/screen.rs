@@ -268,7 +268,7 @@ impl Screen {
             behind_taskbar: settings.behind_taskbar,
             icicles: {
                 let mut icicles = Icicles::new();
-                icicles.set_enabled(settings.icicles);
+                icicles.set_enabled(settings.icicles && !settings.autumn);
                 icicles
             },
             focused: None,

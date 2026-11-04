@@ -35,7 +35,9 @@ const HEARTH_BRIGHTNESS: f32 = 0.42;
 const HEARTH_BELOW: f32 = 280.0;
 
 // The input layouts read the sprites' and icicles' parts at these offsets.
-const _: () = assert!(offset_of!(Sprite, lump) == 44 && size_of::<Sprite>() == 48);
+const _: () = assert!(
+    offset_of!(Sprite, lump) == 44 && offset_of!(Sprite, leaf) == 48 && offset_of!(Sprite, spin) == 60 && size_of::<Sprite>() == 68
+);
 const _: () = assert!(offset_of!(IcicleSprite, alpha) == 24 && size_of::<IcicleSprite>() == 32);
 
 #[repr(C)]
@@ -63,6 +65,9 @@ struct Uniforms {
     /// ...how far it spills sideways, how bright it is and how far it reaches below.
     hearth_light: [f32; 4],
     occluders: [[f32; 4]; 16],
+    /// One while leaves fall instead of snow.
+    autumn: f32,
+    padding: [f32; 3],
 }
 
 /// The light the snow is drawn in.
@@ -150,6 +155,8 @@ impl Gpu {
                 element(s!("TINTAMOUNT"), DXGI_FORMAT_R32_FLOAT, 28),
                 element(s!("TINTCOLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 32),
                 element(s!("LUMP"), DXGI_FORMAT_R32_FLOAT, 44),
+                element(s!("LEAF"), DXGI_FORMAT_R32G32B32_FLOAT, 48),
+                element(s!("SPIN"), DXGI_FORMAT_R32G32_FLOAT, 60),
             ];
             let mut sprite_layout = None;
             device.CreateInputLayout(&elements, blob_bytes(&sprite_code), Some(&mut sprite_layout))?;
@@ -342,6 +349,8 @@ impl Surface {
                 hearth,
                 hearth_light: [HEARTH_SPILL, HEARTH_BRIGHTNESS * warmth, HEARTH_BELOW, 0.0],
                 occluders: [[0.0; 4]; 16],
+                autumn: if simulation.autumn() { 1.0 } else { 0.0 },
+                padding: [0.0; 3],
             };
 
             if !piles.is_empty() {
@@ -354,6 +363,7 @@ impl Surface {
                     uniforms.pile_top = pile.top + 2.0;
                     uniforms.pile_bottom = pile.bottom;
                     uniforms.origin = [pile.origin.x, pile.origin.y];
+                    uniforms.shake[2] = pile.drift;
                     uniforms.height_offset = pile.offset as i32;
                     uniforms.occluder_count = pile.occluders.len().min(16) as i32;
                     uniforms.occluders[..pile.occluders.len().min(16)].copy_from_slice(&pile.occluders[..pile.occluders.len().min(16)]);

@@ -40,6 +40,8 @@ pub struct Settings {
     pub login_offered: bool,
     /// New versions from GitHub install themselves.
     pub auto_update: bool,
+    /// Whether leaves fall instead of snow.
+    pub autumn: bool,
 }
 
 impl Settings {
@@ -63,6 +65,7 @@ impl Settings {
             volume: read(w!("ambienceVolume")).unwrap_or(50).clamp(5, 100),
             login_offered: read(w!("loginOffered")).is_some_and(|v| v != 0),
             auto_update: read(w!("autoUpdate")).is_none_or(|v| v != 0),
+            autumn: read(w!("autumn")).is_some_and(|v| v != 0),
         }
     }
 
@@ -84,6 +87,7 @@ impl Settings {
         write(w!("ambienceVolume"), self.volume);
         write(w!("loginOffered"), self.login_offered as u32);
         write(w!("autoUpdate"), self.auto_update as u32);
+        write(w!("autumn"), self.autumn as u32);
     }
 }
 

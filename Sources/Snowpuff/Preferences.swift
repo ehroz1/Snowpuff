@@ -40,6 +40,7 @@ enum Preferences {
     private static let ambienceKey = "ambience"
     private static let ambienceVolumeKey = "ambienceVolume"
     private static let autoUpdateKey = "autoUpdate"
+    private static let autumnKey = "autumn"
 
     static func registerDefaults() {
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -57,6 +58,7 @@ enum Preferences {
             ambienceKey: 0,
             ambienceVolumeKey: 0.5,
             autoUpdateKey: true,
+            autumnKey: false,
         ])
     }
 
@@ -98,6 +100,11 @@ enum Preferences {
     static var icicles: Bool {
         get { defaults.bool(forKey: iciclesKey) }
         set { defaults.set(newValue, forKey: iciclesKey) }
+    }
+
+    static var autumn: Bool {
+        get { defaults.bool(forKey: autumnKey) }
+        set { defaults.set(newValue, forKey: autumnKey) }
     }
 
     static var warmGlow: Bool {
