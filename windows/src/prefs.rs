@@ -46,6 +46,8 @@ pub struct Settings {
     pub autumn: bool,
     /// Whether rain falls instead of snow or leaves.
     pub rain: bool,
+    /// Every frame drawn at the display's full rate.
+    pub max_performance: bool,
 }
 
 impl Settings {
@@ -72,6 +74,7 @@ impl Settings {
             over_full_screen: read(w!("overFullScreen")).is_some_and(|v| v != 0),
             autumn: read(w!("autumn")).is_some_and(|v| v != 0),
             rain: read(w!("rain")).is_some_and(|v| v != 0),
+            max_performance: read(w!("maxPerformance")).is_some_and(|v| v != 0),
         }
     }
 
@@ -96,6 +99,7 @@ impl Settings {
         write(w!("overFullScreen"), self.over_full_screen as u32);
         write(w!("autumn"), self.autumn as u32);
         write(w!("rain"), self.rain as u32);
+        write(w!("maxPerformance"), self.max_performance as u32);
     }
 }
 

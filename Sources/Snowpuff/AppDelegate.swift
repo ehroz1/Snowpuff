@@ -25,9 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var quietItem: NSMenuItem!
     private var snowItem: NSMenuItem!
     private var autumnItem: NSMenuItem!
+    private var rainItem: NSMenuItem!
     private var behindWindowsItem: NSMenuItem!
     private var screenshotsItem: NSMenuItem!
     private var overFullScreenItem: NSMenuItem!
+    private var performanceItems: [NSMenuItem] = []
     private var loginItem: NSMenuItem!
     private var updatesItem: NSMenuItem!
     private var autoUpdateItem: NSMenuItem!
@@ -204,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modes.autoenablesItems = false
         snowItem = add(tr("Snow", "Снег"), #selector(chooseMode), to: modes)
         autumnItem = add(tr("Autumn Leaves", "Осенние листья"), #selector(chooseMode), to: modes)
+        rainItem = add(tr("Rain", "Дождь"), #selector(chooseMode), to: modes)
         menu.addItem(withTitle: tr("Mode", "Режим"), action: nil, keyEquivalent: "").submenu = modes
         accumulateItem = add(tr("Accumulate", "Сугробы"), #selector(toggleAccumulate), to: menu)
         meltItem = add(tr("Melt Snow", "Таяние"), #selector(toggleMeltSnow), to: menu)
@@ -220,6 +223,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         behindWindowsItem = add(tr("Behind Windows", "За окнами"), #selector(toggleBehindWindows), to: menu)
         overFullScreenItem = add(tr("Show over Full Screen", "Поверх полноэкранных приложений"), #selector(toggleOverFullScreen), to: menu)
         screenshotsItem = add(tr("Show in Screenshots", "Показывать на скриншотах"), #selector(toggleScreenshots), to: menu)
+        let performance = NSMenu()
+        performance.autoenablesItems = false
+        performanceItems = [
+            add(tr("Default", "Обычная"), #selector(choosePerformance(_:)), to: performance),
+            add(tr("Max", "Максимальная"), #selector(choosePerformance(_:)), to: performance),
+        ]
+        menu.addItem(withTitle: tr("Performance", "Производительность"), action: nil, keyEquivalent: "").submenu = performance
         loginItem = add(tr("Open at Login", "Открывать при входе"), #selector(toggleOpenAtLogin), to: menu)
         menu.addItem(.separator())
         updatesItem = add(tr("Check for Updates…", "Проверить обновления…"), #selector(checkForUpdates), to: menu)
@@ -267,17 +277,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         snowfallSlider.snowfall = snowfall
         accumulateItem.state = accumulates ? .on : .off
         let autumn = Preferences.autumn
-        snowItem.state = autumn ? .off : .on
-        autumnItem.state = autumn ? .on : .off
+        let raining = Preferences.rain
+        snowItem.state = !autumn && !raining ? .on : .off
+        autumnItem.state = autumn && !raining ? .on : .off
+        rainItem.state = raining ? .on : .off
+        // Rain doesn't pile up, so what is about piles steps aside.
+        accumulateItem.isEnabled = !raining
+        clearItem.isHidden = raining
         meltItem.title = autumn ? tr("Wither Leaves", "Листья вянут") : tr("Melt Snow", "Таяние")
-        snowOnWindowsItem.title = autumn ? tr("Leaves on Windows", "Листья на окнах") : tr("Snow on Windows", "Снег на окнах")
+        snowOnWindowsItem.title = raining ? tr("Rain on Windows", "Дождь на окнах")
+            : autumn ? tr("Leaves on Windows", "Листья на окнах") : tr("Snow on Windows", "Снег на окнах")
         clearItem.title = autumn ? tr("Clear Leaves", "Смести все листья") : tr("Clear Snow", "Смести весь снег")
         meltItem.state = thaws ? .on : .off
-        meltItem.isEnabled = accumulates
+        meltItem.isEnabled = accumulates && !raining
         snowOnWindowsItem.state = snowOnWindows ? .on : .off
         snowOnWindowsItem.isEnabled = !behindWindows
         iciclesItem.state = Preferences.icicles ? .on : .off
-        iciclesItem.isEnabled = snowOnWindows && !behindWindows && !autumn
+        iciclesItem.isEnabled = snowOnWindows && !behindWindows && !autumn && !raining
         warmGlowItem.state = Preferences.warmGlow ? .on : .off
         warmGlowItem.isEnabled = snowOnWindows && !behindWindows
         clearItem.isEnabled = screens.contains { $0.simulation.hasSnow || $0.simulation.spriteCount > 0 }
@@ -288,6 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         behindWindowsItem.state = behindWindows ? .on : .off
         screenshotsItem.state = Preferences.showInScreenshots ? .on : .off
         overFullScreenItem.state = Preferences.overFullScreen ? .on : .off
+        performanceItems[0].state = Preferences.maxPerformance ? .off : .on
+        performanceItems[1].state = Preferences.maxPerformance ? .on : .off
         overFullScreenItem.isEnabled = !behindWindows
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         updatesItem.isEnabled = !updater.isBusy
@@ -300,7 +318,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func select(_ snowfall: Snowfall) {
         self.snowfall = snowfall
         Preferences.snowfall = snowfall
-        for snow in screens { snow.simulation.snowfall = snowfall }
+        for snow in screens {
+            if Preferences.rain {
+                snow.rain.intensity = Rain.intensity(snowfall)
+                snow.rain.on = snowfall != .off
+            } else {
+                snow.simulation.snowfall = snowfall
+            }
+        }
         ambience.windiness = windiness
         updateStatusIcon()
     }
@@ -325,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleIcicles() {
         Preferences.icicles.toggle()
-        for snow in screens { snow.icicles.enabled = Preferences.icicles && !Preferences.autumn }
+        for snow in screens { snow.icicles.enabled = Preferences.icicles && !Preferences.autumn && !Preferences.rain }
     }
 
     @objc private func toggleWarmGlow() {
@@ -337,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for snow in screens {
             snow.simulation.blowAway(direction: direction, calm: calm)
+            snow.rain.clear()
             if calm { snow.icicles.melt() } else { snow.icicles.dropAll() }
         }
     }
@@ -401,6 +427,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func choosePerformance(_ sender: NSMenuItem) {
+        Preferences.maxPerformance = sender === performanceItems.last
+    }
+
     @objc private func toggleOverFullScreen() {
         Preferences.overFullScreen.toggle()
         for snow in screens { snow.overFullScreen = Preferences.overFullScreen }
@@ -433,15 +463,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func chooseMode(_ sender: NSMenuItem) {
         let autumn = sender === autumnItem
-        guard autumn != Preferences.autumn else { return }
+        let raining = sender === rainItem
+        guard autumn != Preferences.autumn || raining != Preferences.rain else { return }
+        let intoRain = raining && !Preferences.rain
         Preferences.autumn = autumn
+        Preferences.rain = raining
         let direction = screens.first?.simulation.breezeDirection ?? -1
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for snow in screens {
+            // Rain doesn't lie: what snow or leaves there are blow away as it starts.
+            if intoRain && autumn == snow.simulation.autumn { snow.simulation.blowAway(direction: direction, calm: calm) }
             snow.simulation.switchMode(autumn: autumn, direction: direction, calm: calm)
-            // Leaves don't grow icicles: what hangs goes with the snow.
+            snow.simulation.snowfall = raining ? .off : snowfall
+            snow.rain.intensity = Rain.intensity(snowfall)
+            snow.rain.on = raining && snowfall != .off
+            // Icicles go with the snow.
             if calm { snow.icicles.melt() } else { snow.icicles.dropAll() }
-            snow.icicles.enabled = Preferences.icicles && !autumn
+            snow.icicles.enabled = Preferences.icicles && !autumn && !raining
         }
     }
 

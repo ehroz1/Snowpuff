@@ -171,10 +171,71 @@ static float candlelight(constant Uniforms &u, float2 point) {
     return min(glow, 1.0);
 }
 
+
+/// Rain, drawn by Snowpuff: a sprite whose leaf is below zero is a streak (-1), a drop on the glass (-2) or a
+/// droplet of spray (-3). A drop's turn is how far it stretches along its run.
+static SpriteOut rainVertex(Sprite s, constant Uniforms &u) {
+    SpriteOut out;
+    float kind = s.leaf;
+    // Streaks smear over about a 1/33 s exposure, as long as they fall in a frame; spray over less.
+    float2 travel = kind < -1.5 ? (kind < -2.5 ? s.velocity * 0.012 : float2(0.0)) : s.velocity * 0.03;
+    float stretch = (kind < -1.5 && kind > -2.5) ? max(s.turn, 1.0) : 1.0;
+    float extent = max(s.size * 1.3 * stretch + length(travel), 2.0 / u.scale) + 2.0 / u.scale;
+    out.position = float4((s.position - travel * 0.5 + u.shake.xy) / u.viewSize * 2.0 - 1.0, 0.0, 1.0);
+    out.pointSize = extent * u.scale;
+    out.streak = travel / extent;
+    out.radius = s.size * 0.5 / extent;
+    out.alpha = s.alpha;
+    out.light = u.light.rgb;
+    out.warm = candlelight(u, s.position);
+    out.leaf = kind;
+    out.turn = stretch;
+    // Its radius in pixels, for edges a pixel soft at any size.
+    out.reach = max(s.size * 0.5 * u.scale, 0.5);
+    return out;
+}
+
+static float4 rainFragment(SpriteOut in, float2 p) {
+    float kind = in.leaf;
+    float soft = 1.0 / in.reach;
+    float3 lit = mix(in.light, candle, in.warm * 0.5);
+    if (kind > -1.5 || kind < -2.5) {
+        // A streak or a droplet: a thin line along its fall, brightest at its head.
+        float2 h = in.streak * 0.5;
+        float span = dot(h, h);
+        float t = span > 0.0 ? clamp(dot(p, h) / span, -1.0, 1.0) : 0.0;
+        float d = length(p - h * t) / max(in.radius, 1e-4);
+        float head = span > 0.0 ? 0.3 + 0.7 * (t * 0.5 + 0.5) : 1.0;
+        float a = (1.0 - smoothstep(1.0 - soft * 2.0, 1.0 + soft, d)) * in.alpha * head;
+        if (a < 0.003) discard_fragment();
+        // Grey enough to show over a light window as well as against a dark desktop.
+        float3 color = float3(0.72, 0.76, 0.82) * lit;
+        return float4(color * a, a);
+    }
+    // A drop on the glass: a little lens. Mostly clear, with the dark rim and the bright crescent that light bent
+    // through water shows, and a glint near its top. Running or hanging drops swell toward their foot.
+    float2 q = p / max(in.radius, 1e-4);
+    q.y = q.y > 0.0 ? q.y / in.turn : q.y / (1.0 + (in.turn - 1.0) * 0.25);
+    float r = length(q);
+    float body = 1.0 - smoothstep(1.0 - soft, 1.0 + soft, r);
+    if (body < 0.003) discard_fragment();
+    float rim = smoothstep(0.6, 1.0, r) * (0.3 + 0.7 * saturate(0.55 - q.y * 0.7));
+    // Water bends what is behind it: darker along its lower half, with a bright crescent inside its foot.
+    float shade = saturate(-q.y * 0.6 + 0.1) * (1.0 - smoothstep(0.0, 0.9, r)) * 0.18;
+    float glint = pow(saturate(1.0 - length(q - float2(-0.3, 0.42)) / 0.3), 1.5);
+    float crescent = pow(saturate(1.0 - length((q - float2(0.05, -0.55)) * float2(0.7, 1.8)) / 0.55), 2.0) * 0.8;
+    float bright = saturate(glint + crescent);
+    float dark = saturate(rim * 0.75 + shade);
+    float a = saturate(0.1 + dark + bright * 0.85) * body * in.alpha;
+    float3 color = mix(float3(0.04, 0.05, 0.07), float3(1.0) * lit, bright / max(bright + dark, 1e-3));
+    return float4(color * a, a);
+}
+
 vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
                               const device Sprite *sprites [[buffer(0)]],
                               constant Uniforms &u [[buffer(1)]]) {
     Sprite s = sprites[vid];
+    if (s.leaf < 0.0) return rainVertex(s, u);
     if (s.leaf != 0.0) {
         SpriteOut out;
         // About a 1/40 s exposure: at 30 frames a second a falling leaf smears most of the way to where the next
@@ -228,6 +289,7 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
 fragment float4 spriteFragment(SpriteOut in [[stage_in]], float2 coord [[point_coord]], constant Uniforms &u [[buffer(1)]]) {
     // Point coordinates run down the screen; velocities run up.
     float2 p = float2(coord.x - 0.5, 0.5 - coord.y);
+    if (in.leaf < 0.0) return rainFragment(in, p);
     if (in.leaf != 0.0) {
         // The leaf over the exposure, from where it was to where it is now, turning and tumbling on the way.
         int n = int(in.samples);

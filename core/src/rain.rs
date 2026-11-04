@@ -306,7 +306,7 @@ impl Rain {
                 && !pane.ledge_only
             {
                 let (x, size, rest, down) =
-                    (at.x - pane.frame.x, self.range(2.0, 4.2), self.range(0.3, 3.5), self.range(1.5, 5.0));
+                    (at.x - pane.frame.x, self.range(3.0, 5.8), self.range(0.3, 3.5), self.range(1.5, 5.0));
                 let wobble = self.range(0.0, 6.28);
                 self.drops.push(Drop { window, x, down, size, motion: Motion::Resting(rest), since_bead: 0.0, wobble });
             }
@@ -387,8 +387,8 @@ impl Rain {
                     }
                 }
                 Motion::Hanging => {
-                    drop.size += dt * 0.7;
-                    if drop.size > 5.2 {
+                    drop.size += dt * 0.9;
+                    if drop.size > 7.4 {
                         released.push(*drop);
                         drop.size = 0.0;
                     }
@@ -405,7 +405,7 @@ impl Rain {
                     && bead.down > drop.down - drop.size
                     && bead.down < drop.down + drop.size * 0.5;
                 if near {
-                    drop.size = (drop.size * drop.size + bead.size * bead.size).sqrt().min(6.0);
+                    drop.size = (drop.size * drop.size + bead.size * bead.size).sqrt().min(8.0);
                 }
                 !near
             });
@@ -503,7 +503,7 @@ impl Rain {
                 continue;
             }
             let fade = 1.0 - (bead.age / bead.life).powi(3);
-            put(Sprite { position: at, size: bead.size, alpha: 0.8 * fade, leaf: [BEAD, 1.0, 0.0], ..Default::default() });
+            put(Sprite { position: at, size: bead.size, alpha: 0.9 * fade, leaf: [BEAD, 1.0, 0.0], ..Default::default() });
         }
         for drop in &self.drops {
             let Some(pane) = self.panes.get(&drop.window) else { continue };
@@ -514,7 +514,7 @@ impl Rain {
             // Running drops stretch along their run; hanging ones swell into a teardrop.
             let stretch = match drop.motion {
                 Motion::Running { speed, .. } => 1.0 + (speed / 120.0).min(0.6),
-                Motion::Hanging => 1.0 + (drop.size - 3.0).max(0.0) * 0.12,
+                Motion::Hanging => 1.0 + (drop.size - 4.0).max(0.0) * 0.12,
                 Motion::Resting(_) => 1.0,
             };
             put(Sprite { position: at, size: drop.size, alpha: 0.95, leaf: [BEAD, stretch, 0.0], ..Default::default() });

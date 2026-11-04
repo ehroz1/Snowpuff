@@ -45,6 +45,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var focusedWindow: () -> CGRect? = { nil }
     var warmGlow: () -> Bool = { true }
     var icicles: Icicles?
+    var rain: Rain?
     private var hearth = SIMD4<Float>(repeating: 0)
     private var hearthStrength: Float = 0
 
@@ -132,18 +133,26 @@ final class Renderer: NSObject, MTKViewDelegate {
                 shatter: { simulation.shatterIcicle(at: $0, size: $1) }
             ) || changed
         }
+        var raining = false
+        if let rain, rain.isActive {
+            let simulation = simulation
+            rain.step(dt: dt, cursor: cursor, ground: { simulation.groundLevel(at: $0) })
+            raining = true
+            changed = true
+        }
         let hearthMoved = updateHearth(dt: dt)
         // The lantern follows the cursor even over snow that lies still; the window glow and falling icicles need a smooth rate too.
-        let lanternMoved = (ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5) || hearthMoved || (icicles?.isFalling ?? false)
+        let lanternMoved = (ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5) || hearthMoved || (icicles?.isFalling ?? false) || raining
         lanternAt = cursor
         let fastest = budget == .full ? interactiveFrameRate : min(60, interactiveFrameRate)
         // 24 only where it divides the display's rate evenly; elsewhere it would judder.
         let calm = budget == .saver && interactiveFrameRate % 24 == 0 ? 24 : 30
-        let frameRate = switch simulation.pace {
+        let paced = switch simulation.pace {
         case .calm: calm
         case .lively: min(60, fastest)
         case .interactive: fastest
         }
+        let frameRate = Preferences.maxPerformance && budget == .full ? interactiveFrameRate : paced
         let pace = lanternMoved ? max(frameRate, min(60, fastest)) : frameRate
         if view.preferredFramesPerSecond != pace { view.preferredFramesPerSecond = pace }
         idleFrames = changed || lanternMoved ? 0 : idleFrames + 1
@@ -165,7 +174,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     func encode(into commandBuffer: MTLCommandBuffer, pass: MTLRenderPassDescriptor, scale: Float, time: Float) {
-        reserve(sprites: simulation.spriteCount, columns: simulation.columnCount)
+        reserve(sprites: simulation.spriteCount + (rain?.spriteCount ?? 0), columns: simulation.columnCount)
         guard spriteBuffers.count == framesInFlight, heightBuffers.count == framesInFlight,
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
 
@@ -173,10 +182,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         slot += 1
         let spriteBuffer = spriteBuffers[index]
         let heightBuffer = heightBuffers[index]
-        let sprites = simulation.writeSprites(
-            into: spriteBuffer.contents().bindMemory(to: Sprite.self, capacity: spriteCapacity),
-            capacity: spriteCapacity
-        )
+        let spritePointer = spriteBuffer.contents().bindMemory(to: Sprite.self, capacity: spriteCapacity)
+        var sprites = simulation.writeSprites(into: spritePointer, capacity: spriteCapacity)
+        if let rain { sprites += rain.write(into: spritePointer + sprites, capacity: spriteCapacity - sprites) }
         let piles = simulation.writeLayers(
             into: heightBuffer.contents().bindMemory(to: Float.self, capacity: heightCapacity),
             capacity: heightCapacity

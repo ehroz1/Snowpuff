@@ -41,6 +41,8 @@ enum Preferences {
     private static let ambienceVolumeKey = "ambienceVolume"
     private static let autoUpdateKey = "autoUpdate"
     private static let overFullScreenKey = "overFullScreen"
+    private static let rainKey = "rain"
+    private static let maxPerformanceKey = "maxPerformance"
     private static let autumnKey = "autumn"
 
     static func registerDefaults() {
@@ -60,6 +62,8 @@ enum Preferences {
             ambienceVolumeKey: 0.5,
             autoUpdateKey: true,
             overFullScreenKey: false,
+            rainKey: false,
+            maxPerformanceKey: false,
             autumnKey: false,
         ])
     }
@@ -127,6 +131,18 @@ enum Preferences {
     static var ambience: Ambience.Mode {
         get { Ambience.Mode(rawValue: defaults.integer(forKey: ambienceKey)) ?? .off }
         set { defaults.set(newValue.rawValue, forKey: ambienceKey) }
+    }
+
+    /// Every frame is drawn at the display's full rate, for the smoothest motion at some cost in power.
+    static var maxPerformance: Bool {
+        get { defaults.bool(forKey: maxPerformanceKey) }
+        set { defaults.set(newValue, forKey: maxPerformanceKey) }
+    }
+
+    /// Rain falls instead of snow or leaves.
+    static var rain: Bool {
+        get { defaults.bool(forKey: rainKey) }
+        set { defaults.set(newValue, forKey: rainKey) }
     }
 
     /// The snow stays over full-screen apps and games.

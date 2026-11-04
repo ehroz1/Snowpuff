@@ -61,6 +61,7 @@ const ID_SNOW: u32 = 220;
 const ID_AUTUMN: u32 = 221;
 const ID_OVER_FULL_SCREEN: u32 = 222;
 const ID_RAIN: u32 = 223;
+const ID_PERFORMANCE: u32 = 224;
 const ID_QUIT: u32 = 299;
 const TIMER_WELCOME: usize = 1;
 const TIMER_CALLS: usize = 2;
@@ -404,6 +405,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let Ok(snowfall) = CreatePopupMenu() else { return };
         let Ok(sound) = CreatePopupMenu() else { return };
         let Ok(modes) = CreatePopupMenu() else { return };
+        let Ok(performance) = CreatePopupMenu() else { return };
         for (i, option) in Snowfall::ALL.iter().enumerate() {
             append(snowfall, MF_STRING, ID_SNOWFALL + i as u32, snowfall_title(*option));
         }
@@ -455,6 +457,11 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         );
         append(menu, MF_STRING | checked(settings.behind_taskbar), ID_TASKBAR, tr("Behind Taskbar", "За панелью задач"));
         append(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS, tr("Show in Screenshots", "Показывать на скриншотах"));
+        append(performance, MF_STRING, ID_PERFORMANCE, tr("Default", "Обычная"));
+        append(performance, MF_STRING, ID_PERFORMANCE + 1, tr("Max", "Максимальная"));
+        let chosen_rate = ID_PERFORMANCE + settings.max_performance as u32;
+        let _ = CheckMenuRadioItem(performance, ID_PERFORMANCE, ID_PERFORMANCE + 1, chosen_rate, MF_BYCOMMAND.0);
+        append(menu, MF_POPUP, performance.0 as u32, tr("Performance", "Производительность"));
         append(menu, MF_STRING | checked(login), ID_LOGIN, tr("Open at Login", "Открывать при входе"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let updates = match (&pending, updating) {
@@ -585,6 +592,10 @@ fn choose(window: HWND, chosen: u32, login: bool) {
                 ID_TASKBAR => {
                     settings.behind_taskbar = !settings.behind_taskbar;
                     Command::BehindTaskbar(settings.behind_taskbar)
+                }
+                ID_PERFORMANCE | 225 => {
+                    settings.max_performance = chosen != ID_PERFORMANCE;
+                    Command::MaxPerformance(settings.max_performance)
                 }
                 ID_OVER_FULL_SCREEN => {
                     settings.over_full_screen = !settings.over_full_screen;

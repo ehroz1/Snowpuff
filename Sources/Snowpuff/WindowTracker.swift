@@ -29,6 +29,8 @@ struct WindowSurface: Equatable {
     let isDock: Bool
     /// Frames of windows in front of this one along its bottom edge, where its icicles hang.
     var eaveBlockers: [CGRect] = []
+    /// Frames of every window in front of this one: rain on its glass doesn't show behind them.
+    var fronts: [CGRect] = []
 
     func shifted(by dx: CGFloat) -> WindowSurface {
         WindowSurface(
@@ -38,7 +40,8 @@ struct WindowSurface: Equatable {
             cornerRadius: cornerRadius,
             cornerExponent: cornerExponent,
             isDock: isDock,
-            eaveBlockers: eaveBlockers.map { $0.offsetBy(dx: dx, dy: 0) }
+            eaveBlockers: eaveBlockers.map { $0.offsetBy(dx: dx, dy: 0) },
+            fronts: fronts.map { $0.offsetBy(dx: dx, dy: 0) }
         )
     }
 }
@@ -452,7 +455,8 @@ final class WindowTracker {
                     cornerRadius: radius,
                     cornerExponent: capsule ? 2 : 2.5,
                     isDock: shelf,
-                    eaveBlockers: blockers.filter { $0.intersects(CGRect(x: frame.minX, y: frame.minY - 40, width: frame.width, height: 42)) }
+                    eaveBlockers: blockers.filter { $0.intersects(CGRect(x: frame.minX, y: frame.minY - 40, width: frame.width, height: 42)) },
+                    fronts: blockers
                 ))
             }
             blockers.append(frame)

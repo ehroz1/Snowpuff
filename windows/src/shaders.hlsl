@@ -233,22 +233,26 @@ float4 rainFragment(SpriteOut i, float2 p) {
         float head = span > 0.0 ? 0.3 + 0.7 * (t * 0.5 + 0.5) : 1.0;
         float a = (1.0 - smoothstep(1.0 - soft * 2.0, 1.0 + soft, d)) * i.alpha * head;
         if (a < 0.003) discard;
-        float3 color = float3(0.86, 0.9, 0.96) * lit;
+        // Grey enough to show over a light window as well as against a dark desktop.
+        float3 color = float3(0.72, 0.76, 0.82) * lit;
         return float4(color * a, a);
     }
     // A drop on the glass: a little lens. Mostly clear, with the dark rim and the bright crescent that light bent
     // through water shows, and a glint near its top. Running or hanging drops swell toward their foot.
     float2 q = p / max(i.radius, 1e-4);
-    q.y = q.y > 0.0 ? q.y * i.leaf.y : q.y * (1.0 + (i.leaf.y - 1.0) * 0.25);
+    q.y = q.y > 0.0 ? q.y / i.leaf.y : q.y / (1.0 + (i.leaf.y - 1.0) * 0.25);
     float r = length(q);
     float body = 1.0 - smoothstep(1.0 - soft, 1.0 + soft, r);
     if (body < 0.003) discard;
-    float rim = smoothstep(0.55, 1.0, r) * (0.55 + 0.45 * saturate(-q.y * 0.8 + 0.3));
-    float glint = pow(saturate(1.0 - length(q - float2(-0.32, 0.38)) / 0.32), 2.0);
-    float crescent = pow(saturate(1.0 - length((q - float2(0.08, -0.52)) * float2(0.8, 1.6)) / 0.5), 2.0) * 0.6;
+    float rim = smoothstep(0.6, 1.0, r) * (0.3 + 0.7 * saturate(0.55 - q.y * 0.7));
+    // Water bends what is behind it: darker along its lower half, with a bright crescent inside its foot.
+    float shade = saturate(-q.y * 0.6 + 0.1) * (1.0 - smoothstep(0.0, 0.9, r)) * 0.18;
+    float glint = pow(saturate(1.0 - length(q - float2(-0.3, 0.42)) / 0.3), 1.5);
+    float crescent = pow(saturate(1.0 - length((q - float2(0.05, -0.55)) * float2(0.7, 1.8)) / 0.55), 2.0) * 0.8;
     float bright = saturate(glint + crescent);
-    float a = saturate(0.07 + rim * 0.5 + bright * 0.85) * body * i.alpha;
-    float3 color = lerp(float3(0.05, 0.06, 0.08), float3(1.0, 1.0, 1.0) * lit, bright / max(bright + rim * 0.6, 1e-3));
+    float dark = saturate(rim * 0.75 + shade);
+    float a = saturate(0.1 + dark + bright * 0.85) * body * i.alpha;
+    float3 color = lerp(float3(0.04, 0.05, 0.07), float3(1.0, 1.0, 1.0) * lit, bright / max(bright + dark, 1e-3));
     return float4(color * a, a);
 }
 

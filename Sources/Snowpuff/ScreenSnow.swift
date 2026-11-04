@@ -13,6 +13,7 @@ final class ScreenSnow {
     private let light = SceneLight()
     private(set) var screen: NSScreen
     let icicles = Icicles()
+    let rain: Rain
     var autumn: Bool {
         get { simulation.autumn }
         set { simulation.autumn = newValue }
@@ -38,7 +39,7 @@ final class ScreenSnow {
         let simulation = SnowSimulation(
             width: Float(screen.frame.width),
             height: Float(screen.frame.height),
-            snowfall: Preferences.snowfall
+            snowfall: Preferences.rain ? .off : Preferences.snowfall
         )
         simulation.thaws = Preferences.meltSnow
         simulation.accumulates = Preferences.accumulate
@@ -51,6 +52,9 @@ final class ScreenSnow {
         }
         self.displayID = displayID
         self.screen = screen
+        rain = Rain(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        rain.intensity = Rain.intensity(Preferences.snowfall)
+        rain.on = Preferences.rain && Preferences.snowfall != .off
         self.simulation = simulation
         self.renderer = renderer
         window = OverlayWindow(screen: screen)
@@ -73,6 +77,7 @@ final class ScreenSnow {
             simulation.windowFrames = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
             if let update {
                 icicles.update(update.surfaces, interval: update.interval, keep: update.parked.union(update.elsewhere), sliding: update.sliding)
+                rain.updateWindows(update.surfaces, interval: Double(update.interval))
             }
             return update
         }
@@ -80,8 +85,9 @@ final class ScreenSnow {
             light.update(screen: self.screen, now: now)
             return (light.light, light.shadowTint, light.rim, light.lantern)
         }
-        icicles.enabled = Preferences.icicles && !Preferences.autumn
+        icicles.enabled = Preferences.icicles && !Preferences.autumn && !Preferences.rain
         renderer.icicles = icicles
+        renderer.rain = rain
         renderer.warmGlow = { Preferences.warmGlow && snowOnWindows() }
         renderer.focusedWindow = { [unowned self] in window.behindWindows ? nil : tracker.focused }
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
@@ -131,6 +137,7 @@ final class ScreenSnow {
         dock.fit(to: screen)
         Renderer.fitDrawable(of: view)
         simulation.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        rain.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
         light.invalidate()
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
         measure()
@@ -152,6 +159,7 @@ final class ScreenSnow {
     }
 
     func dropWindowSnow() {
+        rain.updateWindows([], interval: 0.1)
         simulation.updateWindows([], interval: 0.1)
         simulation.windowFrames = []
         icicles.dropAll()

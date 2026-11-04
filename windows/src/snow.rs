@@ -58,6 +58,8 @@ pub enum Command {
     Hushed(bool),
     /// The snow stays over full-screen apps too.
     OverFullScreen(bool),
+    /// Every frame at the display's full rate.
+    MaxPerformance(bool),
     /// Leaves fall instead of snow, or snow instead of leaves, once a gust has blown what is there away; when calm, for
     /// less motion, it melts where it lies instead.
     SwitchMode {
@@ -233,6 +235,10 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                         screen.icicles.set_enabled(settings.icicles && !autumn && !rain);
                         screen.wake(now);
                     });
+                }
+                Command::MaxPerformance(on) => {
+                    settings.max_performance = on;
+                    screens.iter_mut().for_each(|screen| screen.max_performance = on);
                 }
                 Command::OverFullScreen(on) => {
                     settings.over_full_screen = on;

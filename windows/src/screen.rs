@@ -228,6 +228,8 @@ pub struct Screen {
     behind_taskbar: bool,
     pub icicles: Icicles,
     pub rain: Rain,
+    /// Every frame at the display's full rate.
+    pub max_performance: bool,
     /// The foreground window, to glow warm, as the window list last had it.
     focused: Option<Rect>,
     /// The glow as last drawn: where, and how strongly.
@@ -273,6 +275,7 @@ impl Screen {
                 icicles.set_enabled(settings.icicles && !settings.autumn && !settings.rain);
                 icicles
             },
+            max_performance: settings.max_performance,
             rain: {
                 let mut rain = Rain::new(size.0 as f32, size.1 as f32);
                 rain.set_intensity(rain::intensity(settings.snowfall));
@@ -336,11 +339,11 @@ impl Screen {
         let fastest = if budget == PowerBudget::Full { self.interactive_rate } else { self.interactive_rate.min(60) };
         // 24 only where it divides the display's rate evenly; elsewhere it would judder.
         let calm = if budget == PowerBudget::Saver && self.interactive_rate % 24 == 0 { 24 } else { 30 };
-        let rate = match self.simulation.pace() {
+        let rate = if self.max_performance && budget == PowerBudget::Full { fastest } else { match self.simulation.pace() {
             Pace::Calm => calm,
             Pace::Lively => fastest.min(60),
             Pace::Interactive => fastest,
-        };
+        } };
         let rate = if lantern_moved { rate.max(fastest.min(60)) } else { rate };
         self.next_due = clock.schedule(now, rate);
         self.idle_frames = if changed || lantern_moved { 0 } else { self.idle_frames + 1 };
