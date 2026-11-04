@@ -21,6 +21,7 @@ use windows::core::{BOOL, Error, PCWSTR, Result, w};
 
 use snowpuff_core::geometry::{Rect, V2};
 use snowpuff_core::icicles::Icicles;
+use snowpuff_core::rain::{self, Rain};
 use snowpuff_core::simulation::{Pace, SnowSimulation, WindowId, WindowSurface};
 
 use crate::desktop::DesktopLayer;
@@ -226,6 +227,7 @@ pub struct Screen {
     layer: Option<DesktopLayer>,
     behind_taskbar: bool,
     pub icicles: Icicles,
+    pub rain: Rain,
     /// The foreground window, to glow warm, as the window list last had it.
     focused: Option<Rect>,
     /// The glow as last drawn: where, and how strongly.
@@ -268,8 +270,14 @@ impl Screen {
             behind_taskbar: settings.behind_taskbar,
             icicles: {
                 let mut icicles = Icicles::new();
-                icicles.set_enabled(settings.icicles && !settings.autumn);
+                icicles.set_enabled(settings.icicles && !settings.autumn && !settings.rain);
                 icicles
+            },
+            rain: {
+                let mut rain = Rain::new(size.0 as f32, size.1 as f32);
+                rain.set_intensity(rain::intensity(settings.snowfall));
+                rain.set_on(settings.rain && settings.snowfall != snowpuff_core::simulation::Snowfall::Off);
+                rain
             },
             focused: None,
             hearth: [0.0; 4],
@@ -316,9 +324,14 @@ impl Screen {
         let cursor = self.cursor();
         let mut changed = self.simulation.step(dt, cursor);
         changed |= self.icicles.step(dt, &mut self.simulation);
+        let raining = self.rain.is_active();
+        if raining {
+            let simulation = &self.simulation;
+            self.rain.step(dt, Some(cursor), |x| simulation.ground_level(x));
+        }
         let target = if glow && windows.is_some() { self.focused } else { None };
-        // The glow and falling icicles need a smooth rate even over snow that lies still.
-        let lantern_moved = self.ease_hearth(target, dt) || self.icicles.is_falling();
+        // The glow, falling icicles and rain need a smooth rate even over snow that lies still.
+        let lantern_moved = self.ease_hearth(target, dt) || self.icicles.is_falling() || raining;
 
         let fastest = if budget == PowerBudget::Full { self.interactive_rate } else { self.interactive_rate.min(60) };
         // 24 only where it divides the display's rate evenly; elsewhere it would judder.
@@ -342,7 +355,7 @@ impl Screen {
             lantern: (cursor, 0.0),
             hearth: (self.hearth, self.hearth_strength),
         };
-        self.surface.draw(gpu, &self.simulation, &self.icicles, ambient, time)?;
+        self.surface.draw(gpu, &self.simulation, &self.icicles, &self.rain, ambient, time)?;
         Ok(true)
     }
 
@@ -394,6 +407,7 @@ impl Screen {
             .collect();
         self.simulation.update_windows(&surfaces, interval, &HashSet::new(), &elsewhere, false);
         self.icicles.update(&tracker.eaves(&self.monitor.rect, self.size), interval, &elsewhere, false);
+        self.rain.update_windows(&tracker.rain_windows(&self.monitor.rect, self.size), interval);
         self.surfaces = surfaces;
         self.windows_changed_at = now;
     }

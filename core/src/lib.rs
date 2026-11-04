@@ -4,6 +4,7 @@
 pub mod geometry;
 pub mod icicles;
 pub mod layer;
+pub mod rain;
 pub mod simulation;
 pub mod sound;
 pub mod version;

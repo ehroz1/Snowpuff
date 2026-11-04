@@ -23,6 +23,7 @@ use windows_numerics::Matrix3x2;
 
 use snowpuff_core::geometry::V2;
 use snowpuff_core::icicles::{IcicleSprite, Icicles};
+use snowpuff_core::rain::Rain;
 use snowpuff_core::simulation::{COLUMN_WIDTH, SnowSimulation, Sprite};
 
 const SHADERS: &str = include_str!("shaders.hlsl");
@@ -287,8 +288,8 @@ impl Surface {
         }
     }
 
-    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, icicles: &Icicles, ambient: Ambient, time: f32) -> Result<()> {
-        self.reserve(gpu, simulation.sprite_count(), simulation.column_count(), icicles.count())?;
+    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, icicles: &Icicles, rain: &Rain, ambient: Ambient, time: f32) -> Result<()> {
+        self.reserve(gpu, simulation.sprite_count() + rain.sprite_count(), simulation.column_count(), icicles.count())?;
         let (Some(sprite_buffer), Some((height_buffer, height_view))) = (&self.sprites, &self.heights) else {
             return Ok(());
         };
@@ -296,7 +297,9 @@ impl Surface {
         unsafe {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             context.Map(sprite_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
-            let sprites = simulation.write_sprites(std::slice::from_raw_parts_mut(mapped.pData.cast::<Sprite>(), self.sprite_capacity));
+            let all = std::slice::from_raw_parts_mut(mapped.pData.cast::<Sprite>(), self.sprite_capacity);
+            let snow = simulation.write_sprites(all);
+            let sprites = snow + rain.write(&mut all[snow..]);
             context.Unmap(sprite_buffer, 0);
 
             context.Map(height_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;

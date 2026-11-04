@@ -199,8 +199,64 @@ SpriteOut leafVertex(SpriteIn s, float2 corner) {
     return o;
 }
 
+// Rain, drawn by Snowpuff: a sprite whose leaf seed is below zero is a streak (-1), a drop on the glass (-2) or a
+// droplet of spray (-3). A drop's leaf.y is how far it stretches along its run.
+SpriteOut rainVertex(SpriteIn s, float2 corner) {
+    float kind = s.leaf.x;
+    // Streaks smear over about a 1/33 s exposure, as long as they fall in a frame; spray over less.
+    float2 travel = kind < -1.5 ? (kind < -2.5 ? s.velocity * 0.012 : float2(0.0, 0.0)) : s.velocity * 0.03;
+    float stretch = kind < -1.5 && kind > -2.5 ? max(s.leaf.y, 1.0) : 1.0;
+    float extent = max(s.size * 1.3 * stretch + length(travel), 2.0 / scale) + 2.0 / scale;
+    float2 middle = (s.position - travel * 0.5 + shake.xy) / viewSize * 2.0 - 1.0;
+    SpriteOut o = (SpriteOut)0;
+    o.position = float4(middle + (corner - 0.5) * extent * 2.0 / viewSize, 0.0, 1.0);
+    o.coord = float2(corner.x, 1.0 - corner.y);
+    o.streak = travel / extent;
+    o.radius = s.size * 0.5 / extent;
+    o.alpha = s.alpha;
+    o.warm = candlelight(s.position);
+    // Its kind, its stretch and its radius in pixels, for edges a pixel soft at any size.
+    o.leaf = float4(kind, stretch, max(s.size * 0.5 * scale, 0.5), 0.0);
+    return o;
+}
+
+float4 rainFragment(SpriteOut i, float2 p) {
+    float kind = i.leaf.x;
+    float soft = 1.0 / i.leaf.z;
+    float3 lit = lerp(light.rgb, candle, i.warm * 0.5);
+    [branch] if (kind > -1.5 || kind < -2.5) {
+        // A streak or a droplet: a thin line along its fall, brightest at its head.
+        float2 h = i.streak * 0.5;
+        float span = dot(h, h);
+        float t = span > 0.0 ? clamp(dot(p, h) / span, -1.0, 1.0) : 0.0;
+        float d = length(p - h * t) / max(i.radius, 1e-4);
+        float head = span > 0.0 ? 0.3 + 0.7 * (t * 0.5 + 0.5) : 1.0;
+        float a = (1.0 - smoothstep(1.0 - soft * 2.0, 1.0 + soft, d)) * i.alpha * head;
+        if (a < 0.003) discard;
+        float3 color = float3(0.86, 0.9, 0.96) * lit;
+        return float4(color * a, a);
+    }
+    // A drop on the glass: a little lens. Mostly clear, with the dark rim and the bright crescent that light bent
+    // through water shows, and a glint near its top. Running or hanging drops swell toward their foot.
+    float2 q = p / max(i.radius, 1e-4);
+    q.y = q.y > 0.0 ? q.y * i.leaf.y : q.y * (1.0 + (i.leaf.y - 1.0) * 0.25);
+    float r = length(q);
+    float body = 1.0 - smoothstep(1.0 - soft, 1.0 + soft, r);
+    if (body < 0.003) discard;
+    float rim = smoothstep(0.55, 1.0, r) * (0.55 + 0.45 * saturate(-q.y * 0.8 + 0.3));
+    float glint = pow(saturate(1.0 - length(q - float2(-0.32, 0.38)) / 0.32), 2.0);
+    float crescent = pow(saturate(1.0 - length((q - float2(0.08, -0.52)) * float2(0.8, 1.6)) / 0.5), 2.0) * 0.6;
+    float bright = saturate(glint + crescent);
+    float a = saturate(0.07 + rim * 0.5 + bright * 0.85) * body * i.alpha;
+    float3 color = lerp(float3(0.05, 0.06, 0.08), float3(1.0, 1.0, 1.0) * lit, bright / max(bright + rim * 0.6, 1e-3));
+    return float4(color * a, a);
+}
+
 SpriteOut spriteVertex(SpriteIn s) {
     float2 corner = float2(float(s.vid & 1), float(s.vid >> 1));
+    [branch] if (s.leaf.x < 0.0) {
+        return rainVertex(s, corner);
+    }
     [branch] if (s.leaf.x != 0.0) {
         return leafVertex(s, corner);
     }
@@ -251,13 +307,17 @@ float4 spriteFragment(SpriteOut i) : SV_Target {
     // Quad coordinates run down the screen; velocities run up.
     float2 p = float2(i.coord.x - 0.5, 0.5 - i.coord.y);
     float inside = 0.0;
-    [branch] if (i.leaf.x != 0.0) {
+    [branch] if (i.leaf.x > 0.0) {
         float blade;
         float2 frame;
         inside = leafShape(p * i.smear.x, i.leaf.x, i.leaf.y - i.smear.y * 0.5, clamp(i.leaf.z - i.smear.z * 0.5, -1.0, 1.0), blade, frame);
     }
     // Gradients are taken outside any branch, where every graphics card has them for all four pixels of a block.
     float2 slope = float2(ddx(inside), -ddy(inside));
+    // Rain draws without gradients, so it branches off only once they are taken.
+    [branch] if (i.leaf.x < 0.0) {
+        return rainFragment(i, p);
+    }
     [branch] if (i.leaf.x != 0.0) {
         // Gradients can't be taken in a loop of varying length, so every moment's outline is smoothed as wide as the
         // one midway through the exposure, the only moment drawn when the leaf hardly moves.

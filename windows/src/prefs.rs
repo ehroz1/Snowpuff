@@ -44,6 +44,8 @@ pub struct Settings {
     pub over_full_screen: bool,
     /// Whether leaves fall instead of snow.
     pub autumn: bool,
+    /// Whether rain falls instead of snow or leaves.
+    pub rain: bool,
 }
 
 impl Settings {
@@ -69,6 +71,7 @@ impl Settings {
             auto_update: read(w!("autoUpdate")).is_none_or(|v| v != 0),
             over_full_screen: read(w!("overFullScreen")).is_some_and(|v| v != 0),
             autumn: read(w!("autumn")).is_some_and(|v| v != 0),
+            rain: read(w!("rain")).is_some_and(|v| v != 0),
         }
     }
 
@@ -92,6 +95,7 @@ impl Settings {
         write(w!("autoUpdate"), self.auto_update as u32);
         write(w!("overFullScreen"), self.over_full_screen as u32);
         write(w!("autumn"), self.autumn as u32);
+        write(w!("rain"), self.rain as u32);
     }
 }
 

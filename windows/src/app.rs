@@ -60,6 +60,7 @@ const ID_ABOUT: u32 = 218;
 const ID_SNOW: u32 = 220;
 const ID_AUTUMN: u32 = 221;
 const ID_OVER_FULL_SCREEN: u32 = 222;
+const ID_RAIN: u32 = 223;
 const ID_QUIT: u32 = 299;
 const TIMER_WELCOME: usize = 1;
 const TIMER_CALLS: usize = 2;
@@ -424,18 +425,22 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let on_windows = settings.snow_on_windows && !settings.behind_windows;
         append(modes, MF_STRING, ID_SNOW, tr("Snow", "Снег"));
         append(modes, MF_STRING, ID_AUTUMN, tr("Autumn Leaves", "Осенние листья"));
-        let _ = CheckMenuRadioItem(modes, ID_SNOW, ID_AUTUMN, if settings.autumn { ID_AUTUMN } else { ID_SNOW }, MF_BYCOMMAND.0);
+        append(modes, MF_STRING, ID_RAIN, tr("Rain", "Дождь"));
+        let mode = if settings.rain { ID_RAIN } else if settings.autumn { ID_AUTUMN } else { ID_SNOW };
+        let _ = CheckMenuRadioItem(modes, ID_SNOW, ID_RAIN, mode, MF_BYCOMMAND.0);
         let autumn = settings.autumn;
+        let raining = settings.rain;
         let pick = |snow: &'static str, leaves: &'static str| if autumn { leaves } else { snow };
         append(menu, MF_POPUP, snowfall.0 as u32, tr("Intensity", "Интенсивность"));
         append(menu, MF_POPUP, modes.0 as u32, tr("Mode", "Режим"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        append(menu, MF_STRING | checked(settings.accumulate), ID_ACCUMULATE, tr("Accumulate", "Сугробы"));
-        append(menu, MF_STRING | checked(settings.melt) | enabled(settings.accumulate), ID_MELT, pick(tr("Melt Snow", "Таяние"), tr("Wither Leaves", "Листья вянут")));
-        append(menu, MF_STRING | checked(settings.snow_on_windows) | enabled(!settings.behind_windows), ID_WINDOWS, pick(tr("Snow on Windows", "Снег на окнах"), tr("Leaves on Windows", "Листья на окнах")));
-        append(menu, MF_STRING | checked(settings.icicles) | enabled(on_windows && !autumn), ID_ICICLES, tr("Icicles", "Сосульки"));
+        // Rain doesn't pile up, so what is about piles steps aside.
+        append(menu, MF_STRING | checked(settings.accumulate) | enabled(!raining), ID_ACCUMULATE, tr("Accumulate", "Сугробы"));
+        append(menu, MF_STRING | checked(settings.melt) | enabled(settings.accumulate && !raining), ID_MELT, pick(tr("Melt Snow", "Таяние"), tr("Wither Leaves", "Листья вянут")));
+        append(menu, MF_STRING | checked(settings.snow_on_windows) | enabled(!settings.behind_windows), ID_WINDOWS, if raining { tr("Rain on Windows", "Дождь на окнах") } else { pick(tr("Snow on Windows", "Снег на окнах"), tr("Leaves on Windows", "Листья на окнах")) });
+        append(menu, MF_STRING | checked(settings.icicles) | enabled(on_windows && !autumn && !raining), ID_ICICLES, tr("Icicles", "Сосульки"));
         append(menu, MF_STRING | checked(settings.warm_glow) | enabled(on_windows), ID_GLOW, tr("Warm Window Light", "Тёплый свет окна"));
-        append(menu, MF_STRING, ID_CLEAR, pick(tr("Clear Snow", "Смести весь снег"), tr("Clear Leaves", "Смести все листья")));
+        append(menu, MF_STRING | enabled(!raining), ID_CLEAR, pick(tr("Clear Snow", "Смести весь снег"), tr("Clear Leaves", "Смести все листья")));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         append(menu, MF_STRING | checked(settings.puff), ID_PUFF, tr("Blow on the Snow (Microphone)", "Подуть на снег (микрофон)"));
         append(menu, MF_POPUP, sound.0 as u32, tr("Sound", "Звук"));
@@ -536,16 +541,17 @@ fn choose(window: HWND, chosen: u32, login: bool) {
             app.settings.save();
             refresh_sound(app);
         }),
-        ID_SNOW | ID_AUTUMN => {
-            let autumn = chosen == ID_AUTUMN;
+        ID_SNOW | ID_AUTUMN | ID_RAIN => {
+            let (autumn, rain) = (chosen == ID_AUTUMN, chosen == ID_RAIN);
             APP.with_borrow_mut(|app| {
                 let Some(app) = app else { return };
-                if autumn == app.settings.autumn {
+                if autumn == app.settings.autumn && rain == app.settings.rain {
                     return;
                 }
                 app.settings.autumn = autumn;
+                app.settings.rain = rain;
                 app.settings.save();
-                send(app, Command::SwitchMode { autumn, calm: !prefs::animations_enabled() });
+                send(app, Command::SwitchMode { autumn, rain, calm: !prefs::animations_enabled() });
             });
         }
         _ => APP.with_borrow_mut(|app| {

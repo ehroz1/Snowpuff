@@ -14,6 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use snowpuff_core::geometry::V2;
+use snowpuff_core::rain;
 use snowpuff_core::simulation::{ScatterPiece, SnowSimulation, Snowfall};
 
 use crate::desktop::{self, DesktopLayer};
@@ -61,6 +62,7 @@ pub enum Command {
     /// less motion, it melts where it lies instead.
     SwitchMode {
         autumn: bool,
+        rain: bool,
         calm: bool,
     },
     Quit,
@@ -117,7 +119,14 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 Command::Quit => return Ok(()),
                 Command::Snowfall(snowfall) => {
                     settings.snowfall = snowfall;
-                    screens.iter_mut().for_each(|screen| screen.simulation.set_snowfall(snowfall));
+                    for screen in &mut screens {
+                        if settings.rain {
+                            screen.rain.set_intensity(rain::intensity(snowfall));
+                            screen.rain.set_on(snowfall != Snowfall::Off);
+                        } else {
+                            screen.simulation.set_snowfall(snowfall);
+                        }
+                    }
                 }
                 Command::Accumulate(on) => {
                     settings.accumulate = on;
@@ -170,6 +179,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     let direction = screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
                     for screen in &mut screens {
                         screen.simulation.blow_away(direction, calm);
+                        screen.rain.clear();
                         if calm {
                             screen.icicles.melt();
                         } else {
@@ -179,7 +189,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 }
                 Command::Icicles(on) => {
                     settings.icicles = on;
-                    let enabled = on && !settings.autumn;
+                    let enabled = on && !settings.autumn && !settings.rain;
                     screens.iter_mut().for_each(|screen| screen.icicles.set_enabled(enabled));
                 }
                 Command::WarmGlow(on) => settings.warm_glow = on,
@@ -199,19 +209,28 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     }
                     log!("hushed: {on}");
                 }
-                Command::SwitchMode { autumn, calm } => {
+                Command::SwitchMode { autumn, rain, calm } => {
+                    let into_rain = rain && !settings.rain;
                     settings.autumn = autumn;
+                    settings.rain = rain;
                     let direction = screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
                     let now = Clock::now();
                     screens.iter_mut().for_each(|screen| {
+                        // Rain doesn't lie: what snow or leaves there are blow away as it starts.
+                        if into_rain && autumn == screen.simulation.autumn() {
+                            screen.simulation.blow_away(direction, calm);
+                        }
                         screen.simulation.switch_mode(autumn, direction, calm);
+                        screen.simulation.set_snowfall(if rain { Snowfall::Off } else { settings.snowfall });
+                        screen.rain.set_intensity(rain::intensity(settings.snowfall));
+                        screen.rain.set_on(rain && settings.snowfall != Snowfall::Off);
                         // Leaves don't grow icicles: what hangs goes with the snow.
                         if calm {
                             screen.icicles.melt();
                         } else {
                             screen.icicles.drop_all();
                         }
-                        screen.icicles.set_enabled(settings.icicles && !autumn);
+                        screen.icicles.set_enabled(settings.icicles && !autumn && !rain);
                         screen.wake(now);
                     });
                 }
@@ -417,6 +436,9 @@ fn new_simulation(monitor: &Monitor, settings: &Settings) -> SnowSimulation {
     simulation.accumulates = settings.accumulate;
     simulation.set_snowfall_held(!settings.welcomed);
     simulation.set_autumn(settings.autumn);
+    if settings.rain {
+        simulation.set_snowfall(Snowfall::Off);
+    }
     simulation
 }
 

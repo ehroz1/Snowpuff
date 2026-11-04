@@ -22,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PWSTR, w};
 
 use snowpuff_core::geometry::Rect;
+use snowpuff_core::rain::RainWindow;
 use snowpuff_core::simulation::WindowSurface;
 
 use crate::log;
@@ -186,6 +187,27 @@ impl Tracker {
             }
         }
         surfaces
+    }
+
+    /// The windows rain lands on and runs down, each with the frames of every window in front of it.
+    pub fn rain_windows(&self, area: &RECT, size: (u32, u32)) -> Vec<RainWindow> {
+        let (width, height) = (size.0 as f32, size.1 as f32);
+        let sy = height / (area.bottom - area.top).max(1) as f32;
+        let mut fronts: Vec<Rect> = Vec::new();
+        let mut windows = Vec::new();
+        for window in &self.windows {
+            let Some(frame) = local_frame(&window.rect, area, size) else { continue };
+            let room_above = (window.rect.top - area.top) as f32 * sy >= 6.0 && frame.max_y() < height;
+            let on_screen = frame.max_x() > 0.0 && frame.min_x() < width && frame.max_y() > 0.0;
+            let fills_screen = frame.width * frame.height >= width * height * 0.9;
+            if room_above && on_screen && !fills_screen && !window.cover_only && frame.width >= 80.0 && frame.height >= 40.0 {
+                windows.push(RainWindow { id: window.id, frame, fronts: fronts.clone(), ledge_only: false });
+            }
+            if !(window.cover_only && fills_screen) {
+                fronts.push(frame);
+            }
+        }
+        windows
     }
 
     /// The windows icicles hang from, with the frames of the windows in front of each along its bottom edge.
