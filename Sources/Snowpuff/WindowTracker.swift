@@ -415,6 +415,13 @@ final class WindowTracker {
                 dockOut = true
             }
             guard bounds.intersects(screen) else { continue }
+            // Mission Control's own windows (its shield, the bar of Spaces along the top, the shrunk windows' labels)
+            // never carry snow; the bar spans the screen the whole time Mission Control shows, even where the shield
+            // drops out, as over a full-screen app or between Spaces.
+            if owner == "WindowManager" && layer > 0 {
+                if bounds.width >= screen.width * 0.9 && bounds.minY <= screen.minY + 1 { exposing = true }
+                continue
+            }
             // Screen-sized windows above the normal layer (Notification Center, Siri) are transparent overlays.
             if layer > 0 && bounds.width * bounds.height >= screen.width * screen.height * 0.9 {
                 // Mission Control and App Exposé lay a shield of their own over the screen.
@@ -645,7 +652,7 @@ enum SkyLight {
 }
 
 /// Which Spaces windows are on, through private SkyLight calls; when they're unavailable, nothing can be told.
-private enum Spaces {
+enum Spaces {
     private typealias SpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
     private typealias DisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
 
@@ -678,6 +685,20 @@ private enum Spaces {
               !spaces.isEmpty
         else { return nil }
         return Set(spaces.map(\.uint64Value))
+    }
+
+    /// Whether the display shows a full-screen app's Space now. With one set of Spaces for all displays, the window
+    /// server lists them under the main display alone.
+    static func fullScreenShowing(on display: CGDirectDisplayID) -> Bool {
+        guard let connection = SkyLight.connection,
+              let displays = displaySpaces?(connection)?.takeRetainedValue() as? [[String: Any]],
+              let uuid = CGDisplayCreateUUIDFromDisplayID(display)?.takeRetainedValue(),
+              let name = CFUUIDCreateString(nil, uuid) as String?
+        else { return false }
+        let entry = displays.first { ($0["Display Identifier"] as? String)?.caseInsensitiveCompare(name) == .orderedSame }
+            ?? (display == CGMainDisplayID() || displays.count == 1 ? displays.first { $0["Display Identifier"] as? String == "Main" } : nil)
+        guard let current = entry?["Current Space"] as? [String: Any] else { return false }
+        return (current["type"] as? NSNumber)?.intValue == 4
     }
 
     private static func id(_ space: [String: Any]) -> UInt64? {

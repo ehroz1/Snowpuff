@@ -59,6 +59,7 @@ const ID_SITE: u32 = 217;
 const ID_ABOUT: u32 = 218;
 const ID_SNOW: u32 = 220;
 const ID_AUTUMN: u32 = 221;
+const ID_OVER_FULL_SCREEN: u32 = 222;
 const ID_QUIT: u32 = 299;
 const TIMER_WELCOME: usize = 1;
 const TIMER_CALLS: usize = 2;
@@ -441,6 +442,12 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         append(menu, MF_STRING | checked(settings.quiet_on_calls), ID_QUIET, tr("Hide During Calls", "Прятать на созвонах"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         append(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND, tr("Behind Windows", "За окнами"));
+        append(
+            menu,
+            MF_STRING | checked(settings.over_full_screen) | enabled(!settings.behind_windows),
+            ID_OVER_FULL_SCREEN,
+            tr("Show over Full Screen", "Поверх полноэкранных приложений"),
+        );
         append(menu, MF_STRING | checked(settings.behind_taskbar), ID_TASKBAR, tr("Behind Taskbar", "За панелью задач"));
         append(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS, tr("Show in Screenshots", "Показывать на скриншотах"));
         append(menu, MF_STRING | checked(login), ID_LOGIN, tr("Open at Login", "Открывать при входе"));
@@ -572,6 +579,10 @@ fn choose(window: HWND, chosen: u32, login: bool) {
                 ID_TASKBAR => {
                     settings.behind_taskbar = !settings.behind_taskbar;
                     Command::BehindTaskbar(settings.behind_taskbar)
+                }
+                ID_OVER_FULL_SCREEN => {
+                    settings.over_full_screen = !settings.over_full_screen;
+                    Command::OverFullScreen(settings.over_full_screen)
                 }
                 ID_SCREENSHOTS => {
                     settings.show_in_screenshots = !settings.show_in_screenshots;

@@ -40,6 +40,7 @@ enum Preferences {
     private static let ambienceKey = "ambience"
     private static let ambienceVolumeKey = "ambienceVolume"
     private static let autoUpdateKey = "autoUpdate"
+    private static let overFullScreenKey = "overFullScreen"
     private static let autumnKey = "autumn"
 
     static func registerDefaults() {
@@ -58,6 +59,7 @@ enum Preferences {
             ambienceKey: 0,
             ambienceVolumeKey: 0.5,
             autoUpdateKey: true,
+            overFullScreenKey: false,
             autumnKey: false,
         ])
     }
@@ -125,6 +127,12 @@ enum Preferences {
     static var ambience: Ambience.Mode {
         get { Ambience.Mode(rawValue: defaults.integer(forKey: ambienceKey)) ?? .off }
         set { defaults.set(newValue.rawValue, forKey: ambienceKey) }
+    }
+
+    /// The snow stays over full-screen apps and games.
+    static var overFullScreen: Bool {
+        get { defaults.bool(forKey: overFullScreenKey) }
+        set { defaults.set(newValue, forKey: overFullScreenKey) }
     }
 
     /// New versions from GitHub install themselves.

@@ -55,6 +55,8 @@ pub enum Command {
     Breathe(f32),
     /// A call is on: the snow hides until it ends.
     Hushed(bool),
+    /// The snow stays over full-screen apps too.
+    OverFullScreen(bool),
     /// Leaves fall instead of snow, or snow instead of leaves, once a gust has blown what is there away; when calm, for
     /// less motion, it melts where it lies instead.
     SwitchMode {
@@ -213,6 +215,10 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                         screen.wake(now);
                     });
                 }
+                Command::OverFullScreen(on) => {
+                    settings.over_full_screen = on;
+                    screens.iter_mut().for_each(Screen::resume);
+                }
                 Command::Active(on) => {
                     if on && !active {
                         screens.iter_mut().for_each(Screen::resume);
@@ -307,7 +313,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             let mut lost = false;
             let mut released = false;
             for screen in screens.iter_mut().filter(|screen| screen.next_due <= now + clock.tolerance()) {
-                let covering = tracker.covering(&screen.monitor.bounds);
+                let covering = if settings.over_full_screen { None } else { tracker.covering(&screen.monitor.bounds) };
                 if covering.is_some() != screen.covered() {
                     log!("{} {}", screen.monitor.name, covering.map_or("uncovered".to_string(), |class| format!("covered by {class}")));
                     screen.set_covered(covering.is_some());

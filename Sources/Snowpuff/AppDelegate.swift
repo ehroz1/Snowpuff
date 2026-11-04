@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var autumnItem: NSMenuItem!
     private var behindWindowsItem: NSMenuItem!
     private var screenshotsItem: NSMenuItem!
+    private var overFullScreenItem: NSMenuItem!
     private var loginItem: NSMenuItem!
     private var updatesItem: NSMenuItem!
     private var autoUpdateItem: NSMenuItem!
@@ -95,7 +96,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 snow.simulation.snowfallReleased = { [weak self] in self?.releaseSnowfall() }
                 snow.autumn = Preferences.autumn
                 snow.apply(power.budget)
-                snow.window.alphaValue = hushed ? 0 : 1
+                snow.visibilityChanged = { [weak self] in self?.updateActivity() }
+                snow.hushed = hushed
                 screens.append(snow)
             }
         }
@@ -178,14 +180,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if Preferences.puff {
             breath.start()
         }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.8
-            for snow in screens {
-                snow.window.animator().alphaValue = on ? 0 : 1
-                snow.dock.window.animator().alphaValue = on ? 0 : 1
-            }
-        }, completionHandler: { [weak self] in self?.updateActivity() })
-        if !on { updateActivity() }
+        for snow in screens { snow.hushed = on }
+        updateActivity()
         updateStatusIcon()
     }
 
@@ -222,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quietItem = add(tr("Hide During Calls", "Прятать на созвонах"), #selector(toggleQuietOnCalls), to: menu)
         menu.addItem(.separator())
         behindWindowsItem = add(tr("Behind Windows", "За окнами"), #selector(toggleBehindWindows), to: menu)
+        overFullScreenItem = add(tr("Show over Full Screen", "Поверх полноэкранных приложений"), #selector(toggleOverFullScreen), to: menu)
         screenshotsItem = add(tr("Show in Screenshots", "Показывать на скриншотах"), #selector(toggleScreenshots), to: menu)
         loginItem = add(tr("Open at Login", "Открывать при входе"), #selector(toggleOpenAtLogin), to: menu)
         menu.addItem(.separator())
@@ -290,6 +287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quietItem.state = Preferences.quietOnCalls ? .on : .off
         behindWindowsItem.state = behindWindows ? .on : .off
         screenshotsItem.state = Preferences.showInScreenshots ? .on : .off
+        overFullScreenItem.state = Preferences.overFullScreen ? .on : .off
+        overFullScreenItem.isEnabled = !behindWindows
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         updatesItem.isEnabled = !updater.isBusy
         updatesItem.title = updater.isBusy ? tr("Updating…", "Обновление…")
@@ -396,7 +395,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleBehindWindows() {
         behindWindows.toggle()
         Preferences.behindWindows = behindWindows
-        for snow in screens { snow.window.behindWindows = behindWindows }
+        for snow in screens {
+            snow.window.behindWindows = behindWindows
+            snow.checkFullScreen()
+        }
+    }
+
+    @objc private func toggleOverFullScreen() {
+        Preferences.overFullScreen.toggle()
+        for snow in screens { snow.overFullScreen = Preferences.overFullScreen }
     }
 
     @objc private func toggleScreenshots() {
@@ -509,10 +516,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateActivity() {
         let present = !screensAsleep && !screenLocked && !sessionInactive
         // Nobody to hear it while the Mac sleeps, is locked or another user is on it.
-        ambience.muted = hushed || !present
-        let awake = present && !hushed
+        // A film or game in full screen everywhere gets the quiet too.
+        let allCovered = !screens.isEmpty && screens.allSatisfy(\.covered)
+        ambience.muted = hushed || !present || allCovered
         for snow in screens {
-            snow.setActive(awake && snow.window.occlusionState.contains(.visible))
+            // Drawing goes on while the snow fades out, and pauses once it's gone.
+            snow.setActive(present && snow.showing && snow.window.occlusionState.contains(.visible))
         }
     }
 }

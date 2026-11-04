@@ -17,6 +17,21 @@ final class ScreenSnow {
         get { simulation.autumn }
         set { simulation.autumn = newValue }
     }
+    /// A call is on: the snow steps aside.
+    var hushed = false {
+        didSet { if hushed != oldValue { refreshVisibility() } }
+    }
+    /// The snow stays over full-screen apps instead of stepping out of their way.
+    var overFullScreen = Preferences.overFullScreen {
+        didSet { if overFullScreen != oldValue { checkFullScreen() } }
+    }
+    /// A full-screen app's Space shows on this display: the snow fades out and rests until it goes.
+    private(set) var covered = false
+    /// Showing, or still fading out: drawing goes on until the snow is out of sight.
+    private(set) var showing = true
+    /// Called once the snow has faded in or out, to pause or resume drawing.
+    var visibilityChanged: () -> Void = {}
+    private var lookout: Timer?
 
     init?(screen: NSScreen, device: MTLDevice, snowOnWindows: @escaping () -> Bool) {
         guard let displayID = screen.displayID else { return nil }
@@ -74,6 +89,40 @@ final class ScreenSnow {
         view.delegate = renderer
         window.contentView = view
         window.orderFrontRegardless()
+        covered = !overFullScreen && Spaces.fullScreenShowing(on: displayID)
+        if covered {
+            window.alphaValue = 0
+            dock.window.alphaValue = 0
+            showing = false
+        }
+        // A full-screen app can come and go without a Space change being announced, as a video going full screen.
+        lookout = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in self?.checkFullScreen() }
+    }
+
+    /// Fades the snow out of a full-screen app's way, or back once it goes.
+    func checkFullScreen() {
+        let now = !overFullScreen && !window.behindWindows && Spaces.fullScreenShowing(on: displayID)
+        guard now != covered else { return }
+        covered = now
+        refreshVisibility()
+    }
+
+    /// Shows the snow unless a call or a full-screen app keeps it away; it keeps falling while it fades.
+    private func refreshVisibility() {
+        let shown = !hushed && !covered
+        if shown {
+            showing = true
+            visibilityChanged()
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = shown ? 0.5 : 0.35
+            window.animator().alphaValue = shown ? 1 : 0
+            dock.window.animator().alphaValue = shown ? 1 : 0
+        }, completionHandler: { [weak self] in
+            guard let self, !shown, hushed || covered else { return }
+            showing = false
+            visibilityChanged()
+        })
     }
 
     func fit(to screen: NSScreen) {
@@ -110,6 +159,7 @@ final class ScreenSnow {
     }
 
     func spaceChanged() {
+        checkFullScreen()
         simulation.spaceChanged()
         light.invalidate()
         watchWindows()
@@ -122,6 +172,7 @@ final class ScreenSnow {
     }
 
     func close() {
+        lookout?.invalidate()
         view.isPaused = true
         view.delegate = nil
         window.orderOut(nil)
