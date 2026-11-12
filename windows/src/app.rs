@@ -126,6 +126,10 @@ pub fn run() -> Result<()> {
 
         prefs::restore_after_reinstall();
         let mut settings = Settings::load();
+        // Coming from a version before the settings file: write it now, so it is there to outlive an uninstall.
+        if snowpuff::store::read().is_none() {
+            settings.save();
+        }
         // Snow that only falls when remembered isn't much of a mood: the first run adds Snowpuff to the apps that
         // open at login; the menu turns that off.
         if !settings.login_offered {
