@@ -100,11 +100,14 @@ windows/build.sh     # dist/Snowpuff-Setup.exe
 
 ## Релиз
 
+Без терминала: GitHub → **Actions → Release → Run workflow**, впишите версию (например, `1.3.0`) и что изменилось.
+Из терминала:
+
 ```sh
 ./release.sh 1.3.0 "Что изменилось"
 ```
 
-Скрипт проставляет версию в обоих приложениях, коммитит и пушит тег. Дальше GitHub Actions
+Скрипт проставляет версию в обоих приложениях, коммитит и пушит тег. В обоих случаях GitHub Actions
 (`.github/workflows/release.yml`) сам собирает `Snowpuff.dmg`, `Snowpuff.zip` (его скачивает автообновление на Mac) и
 `Snowpuff-Setup.exe` и публикует релиз. Обе версии подхватят его сами.
 

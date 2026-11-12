@@ -1,22 +1,34 @@
-# A tag like v1.3.0 builds both apps and publishes them as a GitHub release, which both apps update from:
-# Snowpuff.dmg for people on a Mac, Snowpuff.zip for the Mac updater, Snowpuff-Setup.exe for Windows.
+# Builds both apps and publishes them as a GitHub release, which both apps update from: Snowpuff.dmg for people on
+# a Mac, Snowpuff.zip for the Mac updater, Snowpuff-Setup.exe for Windows.
+# Starts from a pushed tag like v1.3.0, or by hand: Actions → Release → Run workflow, with the version.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, like 1.3.0"
+        required: true
+      notes:
+        description: "What changed"
+        required: false
 
 permissions:
   contents: write
+
+env:
+  VERSION_INPUT: ${{ inputs.version || github.ref_name }}
 
 jobs:
   mac:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Version from the tag
+      - name: Version
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${VERSION_INPUT#v}
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" Resources/Info.plist
       - name: Build
         run: ./build.sh
@@ -45,7 +57,7 @@ jobs:
       - name: Build
         working-directory: windows
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${VERSION_INPUT#v}
           sed -i "0,/^version = /s/^version = \".*\"/version = \"$version\"/" Cargo.toml
           target=x86_64-pc-windows-gnu
           release=$PWD/target/$target/release
@@ -73,9 +85,17 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES_INPUT: ${{ inputs.notes }}
         run: |
+          version=${VERSION_INPUT#v}
+          tag=v$version
           git fetch --force --tags origin
-          notes=$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)')
-          [ -n "$notes" ] || notes="Snowpuff ${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" dist/Snowpuff.dmg dist/Snowpuff.zip dist/Snowpuff-Setup.exe \
-            --title "Snowpuff ${GITHUB_REF_NAME#v}" --notes "$notes"
+          notes=$NOTES_INPUT
+          [ -n "$notes" ] || notes=$(git for-each-ref "refs/tags/$tag" --format='%(contents)')
+          [ -n "$notes" ] || notes="Snowpuff $version"
+          files="dist/Snowpuff.dmg dist/Snowpuff.zip dist/Snowpuff-Setup.exe"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files --target "$GITHUB_SHA" --title "Snowpuff $version" --notes "$notes"
+          fi
