@@ -5,8 +5,9 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
-use windows::core::{BOOL, PCWSTR, w};
+use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
+use snowpuff::store::{self, Values};
 use snowpuff_core::simulation::Snowfall;
 
 const KEY: PCWSTR = w!("Software\\Snowpuff");
@@ -51,55 +52,85 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// The settings file wins; without one (a version from before it) the registry is read, and the next save
+    /// writes the file.
     pub fn load() -> Settings {
+        let saved = store::read();
+        let read = |name: &str| match &saved {
+            Some(values) => values.get(name).copied(),
+            None => read(&HSTRING::from(name)),
+        };
         let calm = !animations_enabled();
-        let snowfall = read(w!("snowfall")).and_then(|i| Snowfall::ALL.get(i as usize).copied());
+        let snowfall = read("snowfall").and_then(|i| Snowfall::ALL.get(i as usize).copied());
         Settings {
             snowfall: snowfall.unwrap_or(if calm { Snowfall::Light } else { Snowfall::Steady }),
-            accumulate: read(w!("accumulate")).is_none_or(|v| v != 0),
-            melt: read(w!("meltSnow")).is_none_or(|v| v != 0),
-            snow_on_windows: read(w!("snowOnWindows")).is_none_or(|v| v != 0),
-            behind_windows: read(w!("behindWindows")).is_some_and(|v| v != 0),
-            behind_taskbar: read(w!("behindTaskbar")).is_some_and(|v| v != 0),
-            show_in_screenshots: read(w!("showInScreenshots")).is_some_and(|v| v != 0),
-            welcomed: read(w!("welcomed")).is_some_and(|v| v != 0),
-            icicles: read(w!("icicles")).is_none_or(|v| v != 0),
-            warm_glow: read(w!("warmGlow")).is_none_or(|v| v != 0),
-            puff: read(w!("puff")).is_some_and(|v| v != 0),
-            quiet_on_calls: read(w!("quietOnCalls")).is_none_or(|v| v != 0),
-            ambience: read(w!("ambience")).unwrap_or(0).min(3),
-            volume: read(w!("ambienceVolume")).unwrap_or(50).clamp(5, 100),
-            login_offered: read(w!("loginOffered")).is_some_and(|v| v != 0),
-            auto_update: read(w!("autoUpdate")).is_none_or(|v| v != 0),
-            over_full_screen: read(w!("overFullScreen")).is_some_and(|v| v != 0),
-            autumn: read(w!("autumn")).is_some_and(|v| v != 0),
-            rain: read(w!("rain")).is_some_and(|v| v != 0),
-            max_performance: read(w!("maxPerformance")).is_some_and(|v| v != 0),
+            accumulate: read("accumulate").is_none_or(|v| v != 0),
+            melt: read("meltSnow").is_none_or(|v| v != 0),
+            snow_on_windows: read("snowOnWindows").is_none_or(|v| v != 0),
+            behind_windows: read("behindWindows").is_some_and(|v| v != 0),
+            behind_taskbar: read("behindTaskbar").is_some_and(|v| v != 0),
+            show_in_screenshots: read("showInScreenshots").is_some_and(|v| v != 0),
+            welcomed: read("welcomed").is_some_and(|v| v != 0),
+            icicles: read("icicles").is_none_or(|v| v != 0),
+            warm_glow: read("warmGlow").is_none_or(|v| v != 0),
+            puff: read("puff").is_some_and(|v| v != 0),
+            quiet_on_calls: read("quietOnCalls").is_none_or(|v| v != 0),
+            ambience: read("ambience").unwrap_or(0).min(3),
+            volume: read("ambienceVolume").unwrap_or(50).clamp(5, 100),
+            login_offered: read("loginOffered").is_some_and(|v| v != 0),
+            auto_update: read("autoUpdate").is_none_or(|v| v != 0),
+            over_full_screen: read("overFullScreen").is_some_and(|v| v != 0),
+            autumn: read("autumn").is_some_and(|v| v != 0),
+            rain: read("rain").is_some_and(|v| v != 0),
+            max_performance: read("maxPerformance").is_some_and(|v| v != 0),
         }
     }
 
     pub fn save(&self) {
         let snowfall = Snowfall::ALL.iter().position(|&s| s == self.snowfall).unwrap_or(2);
-        write(w!("snowfall"), snowfall as u32);
-        write(w!("accumulate"), self.accumulate as u32);
-        write(w!("meltSnow"), self.melt as u32);
-        write(w!("snowOnWindows"), self.snow_on_windows as u32);
-        write(w!("behindWindows"), self.behind_windows as u32);
-        write(w!("behindTaskbar"), self.behind_taskbar as u32);
-        write(w!("showInScreenshots"), self.show_in_screenshots as u32);
-        write(w!("welcomed"), self.welcomed as u32);
-        write(w!("icicles"), self.icicles as u32);
-        write(w!("warmGlow"), self.warm_glow as u32);
-        write(w!("puff"), self.puff as u32);
-        write(w!("quietOnCalls"), self.quiet_on_calls as u32);
-        write(w!("ambience"), self.ambience);
-        write(w!("ambienceVolume"), self.volume);
-        write(w!("loginOffered"), self.login_offered as u32);
-        write(w!("autoUpdate"), self.auto_update as u32);
-        write(w!("overFullScreen"), self.over_full_screen as u32);
-        write(w!("autumn"), self.autumn as u32);
-        write(w!("rain"), self.rain as u32);
-        write(w!("maxPerformance"), self.max_performance as u32);
+        let mut values = Values::new();
+        for (name, value) in [
+            ("snowfall", snowfall as u32),
+            ("accumulate", self.accumulate as u32),
+            ("meltSnow", self.melt as u32),
+            ("snowOnWindows", self.snow_on_windows as u32),
+            ("behindWindows", self.behind_windows as u32),
+            ("behindTaskbar", self.behind_taskbar as u32),
+            ("showInScreenshots", self.show_in_screenshots as u32),
+            ("welcomed", self.welcomed as u32),
+            ("icicles", self.icicles as u32),
+            ("warmGlow", self.warm_glow as u32),
+            ("puff", self.puff as u32),
+            ("quietOnCalls", self.quiet_on_calls as u32),
+            ("ambience", self.ambience),
+            ("ambienceVolume", self.volume),
+            ("loginOffered", self.login_offered as u32),
+            ("autoUpdate", self.auto_update as u32),
+            ("overFullScreen", self.over_full_screen as u32),
+            ("autumn", self.autumn as u32),
+            ("rain", self.rain as u32),
+            ("maxPerformance", self.max_performance as u32),
+        ] {
+            write(&HSTRING::from(name), value);
+            values.insert(name.to_string(), value);
+        }
+        values.insert("openAtLogin".to_string(), opens_at_login() as u32);
+        if let Err(error) = store::write(&values) {
+            crate::log!("settings file not saved: {error}");
+        }
+    }
+}
+
+/// Snowpuff installed again after being removed: the registry is empty but the settings file remains.
+/// Open at Login, which uninstalling took away, comes back as the file remembers it.
+pub fn restore_after_reinstall() {
+    if read(&HSTRING::from("loginOffered")).is_some() {
+        return;
+    }
+    let Some(saved) = store::read() else { return };
+    if let Some(&on) = saved.get("openAtLogin") {
+        let status = set_opens_at_login(on != 0);
+        crate::log!("open at login restored from the settings file: {} ({status:?})", on != 0);
     }
 }
 
@@ -131,7 +162,7 @@ fn command() -> Option<Vec<u16>> {
     Some(format!("\"{}\"", path.display()).encode_utf16().chain([0]).collect())
 }
 
-fn read(name: PCWSTR) -> Option<u32> {
+fn read(name: &HSTRING) -> Option<u32> {
     let mut value = 0u32;
     let mut size = 4u32;
     let status =
@@ -139,7 +170,7 @@ fn read(name: PCWSTR) -> Option<u32> {
     (status == ERROR_SUCCESS).then_some(value)
 }
 
-fn write(name: PCWSTR, value: u32) {
+fn write(name: &HSTRING, value: u32) {
     unsafe {
         let _ = RegSetKeyValueW(HKEY_CURRENT_USER, KEY, name, REG_DWORD.0, Some((&raw const value).cast::<c_void>()), 4);
     }

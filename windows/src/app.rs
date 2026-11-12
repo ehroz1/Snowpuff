@@ -67,7 +67,7 @@ const TIMER_WELCOME: usize = 1;
 const TIMER_CALLS: usize = 2;
 const TIMER_UPDATES: usize = 3;
 /// How often a running Snowpuff looks for a new version.
-const UPDATE_EVERY: u32 = 6 * 60 * 60 * 1000;
+const UPDATE_EVERY: u32 = 3 * 60 * 60 * 1000;
 const DONATE: &str = "https://t.me/hhrrzz1";
 const SITE: &str = "https://ehroz.pro";
 /// Volumes the sound menu offers, in percent.
@@ -124,6 +124,7 @@ pub fn run() -> Result<()> {
         let window = CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("Snowpuff"), WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None)?;
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
 
+        prefs::restore_after_reinstall();
         let mut settings = Settings::load();
         // Snow that only falls when remembered isn't much of a mood: the first run adds Snowpuff to the apps that
         // open at login; the menu turns that off.
@@ -183,7 +184,16 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// A mistake while handling one message is logged and that message skipped; the tray and the snow carry on.
 unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { handle(window, message, wparam, lparam) }));
+    handled.unwrap_or_else(|_| {
+        log!("message {message:#x} failed; skipped");
+        unsafe { DefWindowProcW(window, message, wparam, lparam) }
+    })
+}
+
+unsafe fn handle(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
         WM_TRAY => {
             let event = (lparam.0 & 0xffff) as u32;
@@ -516,6 +526,12 @@ fn choose(window: HWND, chosen: u32, login: bool) {
         ID_LOGIN => {
             let status = prefs::set_opens_at_login(!login);
             log!("open at login {}: {status:?}", !login);
+            // The settings file remembers it, for a reinstall.
+            APP.with_borrow(|app| {
+                if let Some(app) = app {
+                    app.settings.save();
+                }
+            });
         }
         ID_PUFF => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };

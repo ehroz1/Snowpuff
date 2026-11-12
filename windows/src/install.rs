@@ -42,7 +42,12 @@ pub fn installed_exe() -> Option<PathBuf> {
 /// Puts the app in place and registers it, replacing a running or older copy. Returns where the app went.
 pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     close_running();
-    let folder = known_folder(&FOLDERID_UserProgramFiles).ok_or("the programs folder isn't available")?.join("Snowpuff");
+    // %LOCALAPPDATA%\Programs, which the known folder normally names; spelled out where the known folder isn't there.
+    let programs = known_folder(&FOLDERID_UserProgramFiles)
+        .or_else(|| known_folder(&FOLDERID_LocalAppData).map(|data| data.join("Programs")))
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(|data| PathBuf::from(data).join("Programs")))
+        .ok_or("the programs folder isn't available")?;
+    let folder = programs.join("Snowpuff");
     std::fs::create_dir_all(&folder).map_err(|error| format!("couldn't create {}: {error}", folder.display()))?;
     let exe = folder.join("Snowpuff.exe");
     let staged = folder.join("Snowpuff.exe.new");
@@ -63,10 +68,11 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     let quoted = format!("\"{}\"", exe.display());
     write_string(UNINSTALL, w!("DisplayName"), "Snowpuff");
     write_string(UNINSTALL, w!("DisplayVersion"), version);
-    write_string(UNINSTALL, w!("Publisher"), "Snowpuff");
+    write_string(UNINSTALL, w!("Publisher"), "ehroz.pro");
     write_string(UNINSTALL, w!("DisplayIcon"), &exe.display().to_string());
     write_string(UNINSTALL, w!("InstallLocation"), &folder.display().to_string());
-    write_string(UNINSTALL, w!("URLInfoAbout"), "https://github.com/ehroz1/Snowpuff");
+    write_string(UNINSTALL, w!("URLInfoAbout"), "https://snowpuff.ehroz.pro");
+    write_string(UNINSTALL, w!("HelpLink"), "https://github.com/ehroz1/Snowpuff");
     write_string(UNINSTALL, w!("UninstallString"), &format!("{quoted} --uninstall"));
     write_string(UNINSTALL, w!("QuietUninstallString"), &format!("{quoted} --uninstall --silent"));
     write_number(UNINSTALL, w!("NoModify"), 1);
@@ -79,7 +85,9 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-/// Removes everything Snowpuff put on the computer. The app's own folder goes a moment after this process exits.
+/// Removes everything Snowpuff put on the computer, except the settings file in the roaming profile
+/// (`%APPDATA%\Snowpuff\settings.json`): installed again, Snowpuff picks up where it left off.
+/// The app's own folder goes a moment after this process exits.
 pub fn uninstall() {
     close_running();
     if let Some(programs) = known_folder(&FOLDERID_Programs) {
@@ -99,6 +107,17 @@ pub fn uninstall() {
             .raw_arg(format!("/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{folder}\""))
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
+    }
+}
+
+/// Opens Snowpuff at login, or stops it, for the copy at `exe`.
+pub fn set_open_at_login(exe: &Path, on: bool) {
+    if on {
+        write_string(RUN, NAME, &format!("\"{}\"", exe.display()));
+    } else {
+        unsafe {
+            let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME);
+        }
     }
 }
 

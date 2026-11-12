@@ -1,6 +1,8 @@
-use std::sync::mpsc::Receiver;
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Threading::{
@@ -8,10 +10,9 @@ use windows::Win32::System::Threading::{
     WaitForMultipleObjects,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MB_ICONERROR, MB_OK, MSG, MWMO_INPUTAVAILABLE, MessageBoxW, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
-    QS_ALLINPUT, TranslateMessage, WM_CLOSE,
+    DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage,
 };
-use windows::core::{HSTRING, PCWSTR, Result, w};
+use windows::core::{PCWSTR, Result};
 
 use snowpuff_core::geometry::V2;
 use snowpuff_core::rain;
@@ -73,16 +74,54 @@ pub enum Command {
 /// Raw handles cross to the snow thread as numbers: the thread only waits on the event and posts to the window.
 pub struct Links {
     pub wake: isize,
+    /// The app's hidden window, kept for messages back to it.
+    #[allow(dead_code)]
     pub controller: isize,
 }
 
+/// Draws the snow until told to quit. Whatever stops it otherwise (the graphics driver resetting, a display that
+/// isn't ready yet at login, a mistake in a frame) starts it again after a pause that grows if it keeps
+/// failing, instead of taking the whole app down with it.
 pub fn run(commands: Receiver<Command>, links: Links, settings: Settings) {
-    if let Err(error) = run_loop(&commands, &links, settings) {
-        log!("stopped: {error}");
-        let text = HSTRING::from(format!("Snowpuff couldn't start drawing snow.\n\n{error}"));
-        unsafe {
-            MessageBoxW(None, &text, w!("Snowpuff"), MB_OK | MB_ICONERROR);
-            let _ = PostMessageW(Some(HWND(links.controller as _)), WM_CLOSE, WPARAM(0), LPARAM(0));
+    let mut settings = settings;
+    let mut failures: Vec<Instant> = Vec::new();
+    loop {
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| run_loop(&commands, &links, settings)));
+        match outcome {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => log!("stopped: {error}"),
+            Err(_) => log!("stopped by a mistake; see the panic above"),
+        }
+        failures.retain(|at| at.elapsed() < Duration::from_secs(600));
+        failures.push(Instant::now());
+        let pause = match failures.len() {
+            1 => Duration::from_secs(1),
+            2 => Duration::from_secs(3),
+            3 => Duration::from_secs(10),
+            _ => Duration::from_secs(30),
+        };
+        log!("starting again in {} s", pause.as_secs());
+        if quit_during(&commands, pause) {
+            return;
+        }
+        // Changes made from the menu meanwhile are in the saved settings.
+        settings = Settings::load();
+    }
+}
+
+/// Waits, but leaves at once if the app quits meanwhile. Other commands are dropped: the settings they changed
+/// were saved and are read again.
+fn quit_during(commands: &Receiver<Command>, pause: Duration) -> bool {
+    let until = Instant::now() + pause;
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        match commands.recv_timeout(left) {
+            Ok(Command::Quit) | Err(RecvTimeoutError::Disconnected) => return true,
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => return false,
         }
     }
 }
