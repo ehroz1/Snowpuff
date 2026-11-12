@@ -374,9 +374,9 @@ fn primary(canvas: &Canvas, label: &str, pressed: bool) -> Result<D2D_RECT_F> {
 fn text_button(canvas: &Canvas, label: &str) -> Result<D2D_RECT_F> {
     let card = canvas.rect;
     let (left, top) = (card.left + 28.0, card.bottom - 66.0);
-    let width = 200.0;
+    let width = 300.0;
     canvas.text(label, (left + 4.0, top + 10.0), width, 13.5, DWRITE_FONT_WEIGHT_NORMAL, QUIET, Align::Left)?;
-    Ok(D2D_RECT_F { left, top, right: left + width * 0.8, bottom: top + 40.0 })
+    Ok(D2D_RECT_F { left, top, right: left + 200.0, bottom: top + 40.0 })
 }
 
 /// Which page this is, as dots between the buttons; each dot jumps to its page.
