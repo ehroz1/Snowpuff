@@ -1,0 +1,48 @@
+# Builds both apps on every push and pull request, so a change that breaks either is seen at once.
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Snowpuff.app
+        run: ./build.sh
+      - name: Pack
+        run: ditto -c -k --keepParent build/Snowpuff.app Snowpuff.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Snowpuff-mac
+          path: Snowpuff.zip
+
+  windows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+      - name: Settings file tests
+        working-directory: windows
+        run: cargo test --lib
+      - name: Build Snowpuff-Setup.exe
+        working-directory: windows
+        run: |
+          target=x86_64-pc-windows-gnu
+          release=$PWD/target/$target/release
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+          cargo build --release --target $target --bin Snowpuff
+          SNOWPUFF_APP=$release/Snowpuff.exe cargo build --release --target $target --bin Snowpuff-Setup --features setup
+          cp $release/Snowpuff-Setup.exe ../Snowpuff-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Snowpuff-windows
+          path: Snowpuff-Setup.exe

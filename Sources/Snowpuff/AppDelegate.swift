@@ -3,7 +3,7 @@ import MetalKit
 import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private var device: MTLDevice!
+    private var device: MTLDevice?
     private var screens: [ScreenSnow] = []
     private var snowfall = Snowfall.steady
     private var accumulates = true
@@ -14,31 +14,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let snowfallSlider = SnowfallSlider()
     private var accumulateItem: NSMenuItem!
-    private var meltItem: NSMenuItem!
     private var snowOnWindowsItem: NSMenuItem!
     private var iciclesItem: NSMenuItem!
-    private var warmGlowItem: NSMenuItem!
     private var clearItem: NSMenuItem!
     private var puffItem: NSMenuItem!
     private var soundItems: [NSMenuItem] = []
     private var volumeSlider: NSSlider!
-    private var quietItem: NSMenuItem!
     private var snowItem: NSMenuItem!
     private var autumnItem: NSMenuItem!
     private var rainItem: NSMenuItem!
-    private var behindWindowsItem: NSMenuItem!
-    private var screenshotsItem: NSMenuItem!
-    private var overFullScreenItem: NSMenuItem!
-    private var performanceItems: [NSMenuItem] = []
-    private var loginItem: NSMenuItem!
     private var updatesItem: NSMenuItem!
-    private var autoUpdateItem: NSMenuItem!
     private let updater = Updater()
     private var observers: [NSObjectProtocol] = []
     private var screensAsleep = false
     private var screenLocked = false
     private var sessionInactive = false
-    private var welcome: WelcomeController?
+    private var onboarding: OnboardingController?
+    private lazy var settingsModel = SettingsModel(controls: self)
+    private lazy var settingsWindow = SettingsWindowController(model: settingsModel)
     private let power = PowerMonitor()
     private let ambience = Ambience()
     private let breath = Breath()
@@ -51,23 +44,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.terminate(nil)
             return
         }
+        CrashGuard.start()
+        SettingsFile.restoreIfNeeded()
         Preferences.registerDefaults()
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            NSApp.terminate(nil)
-            return
-        }
-        self.device = device
+        SettingsFile.startSaving()
         snowfall = Preferences.snowfall
         accumulates = Preferences.accumulate
         thaws = Preferences.meltSnow
         snowOnWindows = Preferences.snowOnWindows
         behindWindows = Preferences.behindWindows
         snowfallHeld = !Preferences.welcomed
-        syncScreens()
-        guard !screens.isEmpty else {
-            NSApp.terminate(nil)
-            return
-        }
 
         openAtLoginOnFirstRun()
         statusItem = makeStatusItem()
@@ -76,15 +62,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         observeSystem()
         updater.mayInstallQuietly = { [weak self] in !(self?.hushed ?? false) }
         updater.start()
+        startSnow()
         if snowfallHeld {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.showWelcome() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.showOnboarding() }
         }
+    }
+
+    /// Starts the snow, or keeps trying. Opened at login, Snowpuff can be ahead of the displays and the GPU; it used to
+    /// quit then and stay gone until opened by hand. Now it waits for them, menu and all.
+    private func startSnow() {
+        if device == nil { device = MTLCreateSystemDefaultDevice() }
+        if device != nil { syncScreens() }
+        guard device == nil || screens.isEmpty else { return }
+        NSLog("Snowpuff: nothing to draw on yet (GPU: \(device != nil), displays: \(NSScreen.screens.count)); trying again shortly")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.startSnow() }
     }
 
     // MARK: - Displays
 
     /// One overlay per display: new displays get snow, removed ones lose theirs, the rest follow resolution changes.
     private func syncScreens() {
+        guard let device else { return }
         let current = NSScreen.screens
         let ids = Set(current.compactMap(\.displayID))
         for gone in screens where !ids.contains(gone.displayID) { gone.close() }
@@ -111,26 +109,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for snow in screens { snow.simulation.snowfallHeld = false }
     }
 
-    private func showWelcome() {
-        let welcome = WelcomeController()
-        welcome.scatter = { [weak self] pieces in
-            guard let self, let first = pieces.first else { return }
-            let point = CGPoint(x: CGFloat(first.position.x), y: CGFloat(first.position.y))
-            guard let snow = screens.first(where: { $0.window.frame.contains(point) }) ?? screens.first else { return }
-            let origin = SIMD2(Float(snow.window.frame.minX), Float(snow.window.frame.minY))
-            snow.simulation.scatter(pieces.map { piece in
-                var local = piece
-                local.position -= origin
-                return local
-            })
-        }
-        welcome.skipped = { [weak self] in self?.releaseSnowfall() }
-        welcome.finished = { [weak self] in
+    private func showOnboarding() {
+        let onboarding = OnboardingController()
+        onboarding.finished = { [weak self] in
             Preferences.welcomed = true
-            self?.welcome = nil
+            self?.releaseSnowfall()
+            self?.onboarding = nil
+            SettingsFile.save()
         }
-        self.welcome = welcome
-        welcome.show()
+        self.onboarding = onboarding
+        onboarding.show(model: settingsModel)
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show()
     }
 
     /// Snow that only falls when remembered isn't much of a mood: on the first run Snowpuff adds itself to the
@@ -209,32 +201,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rainItem = add(tr("Rain", "Дождь"), #selector(chooseMode), to: modes)
         menu.addItem(withTitle: tr("Mode", "Режим"), action: nil, keyEquivalent: "").submenu = modes
         accumulateItem = add(tr("Accumulate", "Сугробы"), #selector(toggleAccumulate), to: menu)
-        meltItem = add(tr("Melt Snow", "Таяние"), #selector(toggleMeltSnow), to: menu)
         snowOnWindowsItem = add(tr("Snow on Windows", "Снег на окнах"), #selector(toggleSnowOnWindows), to: menu)
         iciclesItem = add(tr("Icicles", "Сосульки"), #selector(toggleIcicles), to: menu)
-        warmGlowItem = add(tr("Warm Window Light", "Тёплый свет окна"), #selector(toggleWarmGlow), to: menu)
-        clearItem = add(tr("Clear Snow", "Смести весь снег"), #selector(clearSnow), to: menu)
+        clearItem = add(tr("Clear Snow", "Смести весь снег"), #selector(clearSnowFromMenu), to: menu)
         menu.addItem(.separator())
-        puffItem = add(tr("Blow on the Snow (Microphone)", "Подуть на снег (микрофон)"), #selector(togglePuff), to: menu)
         let soundItem = menu.addItem(withTitle: tr("Sound", "Звук"), action: nil, keyEquivalent: "")
         soundItem.submenu = makeSoundMenu()
-        quietItem = add(tr("Hide During Calls", "Прятать на созвонах"), #selector(toggleQuietOnCalls), to: menu)
+        puffItem = add(tr("Blow on the Snow (Microphone)", "Подуть на снег (микрофон)"), #selector(togglePuff), to: menu)
         menu.addItem(.separator())
-        behindWindowsItem = add(tr("Behind Windows", "За окнами"), #selector(toggleBehindWindows), to: menu)
-        overFullScreenItem = add(tr("Show over Full Screen", "Поверх полноэкранных приложений"), #selector(toggleOverFullScreen), to: menu)
-        screenshotsItem = add(tr("Show in Screenshots", "Показывать на скриншотах"), #selector(toggleScreenshots), to: menu)
-        let performance = NSMenu()
-        performance.autoenablesItems = false
-        performanceItems = [
-            add(tr("Default", "Обычная"), #selector(choosePerformance(_:)), to: performance),
-            add(tr("Max", "Максимальная"), #selector(choosePerformance(_:)), to: performance),
-        ]
-        menu.addItem(withTitle: tr("Performance", "Производительность"), action: nil, keyEquivalent: "").submenu = performance
-        loginItem = add(tr("Open at Login", "Открывать при входе"), #selector(toggleOpenAtLogin), to: menu)
-        menu.addItem(.separator())
-        updatesItem = add(tr("Check for Updates…", "Проверить обновления…"), #selector(checkForUpdates), to: menu)
-        autoUpdateItem = add(tr("Update Automatically", "Обновлять автоматически"), #selector(toggleAutoUpdate), to: menu)
-        add(tr("Snowpuff \(Updater.version) on GitHub", "Snowpuff \(Updater.version) на GitHub"), #selector(openGitHub), to: menu)
+        let settings = add(tr("Settings…", "Настройки…"), #selector(openSettings), to: menu)
+        settings.keyEquivalent = ","
+        updatesItem = add(tr("Check for Updates…", "Проверить обновления…"), #selector(checkForUpdatesFromMenu), to: menu)
         menu.addItem(.separator())
         add(tr("Support the Author ♥", "Поддержать автора ♥"), #selector(openDonation), to: menu)
         add(tr("More Apps — ehroz.pro", "Другие приложения — ehroz.pro"), #selector(openSite), to: menu)
@@ -284,35 +261,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Rain doesn't pile up, so what is about piles steps aside.
         accumulateItem.isEnabled = !raining
         clearItem.isHidden = raining
-        meltItem.title = autumn ? tr("Wither Leaves", "Листья вянут") : tr("Melt Snow", "Таяние")
         snowOnWindowsItem.title = raining ? tr("Rain on Windows", "Дождь на окнах")
             : autumn ? tr("Leaves on Windows", "Листья на окнах") : tr("Snow on Windows", "Снег на окнах")
         clearItem.title = autumn ? tr("Clear Leaves", "Смести все листья") : tr("Clear Snow", "Смести весь снег")
-        meltItem.state = thaws ? .on : .off
-        meltItem.isEnabled = accumulates && !raining
         snowOnWindowsItem.state = snowOnWindows ? .on : .off
         snowOnWindowsItem.isEnabled = !behindWindows
         iciclesItem.state = Preferences.icicles ? .on : .off
         iciclesItem.isEnabled = snowOnWindows && !behindWindows && !autumn && !raining
-        warmGlowItem.state = Preferences.warmGlow ? .on : .off
-        warmGlowItem.isEnabled = snowOnWindows && !behindWindows
         clearItem.isEnabled = screens.contains { $0.simulation.hasSnow || $0.simulation.spriteCount > 0 }
         puffItem.state = Preferences.puff ? .on : .off
         for item in soundItems { item.state = item.tag == Preferences.ambience.rawValue ? .on : .off }
         volumeSlider.doubleValue = Double(Preferences.ambienceVolume)
-        quietItem.state = Preferences.quietOnCalls ? .on : .off
-        behindWindowsItem.state = behindWindows ? .on : .off
-        screenshotsItem.state = Preferences.showInScreenshots ? .on : .off
-        overFullScreenItem.state = Preferences.overFullScreen ? .on : .off
-        performanceItems[0].state = Preferences.maxPerformance ? .off : .on
-        performanceItems[1].state = Preferences.maxPerformance ? .on : .off
-        overFullScreenItem.isEnabled = !behindWindows
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         updatesItem.isEnabled = !updater.isBusy
         updatesItem.title = updater.isBusy ? tr("Updating…", "Обновление…")
             : updater.available.map { tr("Update to \($0.version)", "Обновить до \($0.version)") }
             ?? tr("Check for Updates…", "Проверить обновления…")
-        autoUpdateItem.state = Preferences.autoUpdate ? .on : .off
     }
 
     private func select(_ snowfall: Snowfall) {
@@ -357,7 +320,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Preferences.warmGlow.toggle()
     }
 
-    @objc private func clearSnow() {
+    @objc private func clearSnowFromMenu() {
+        clearAll()
+    }
+
+    private func clearAll() {
         let direction = screens.first?.simulation.breezeDirection ?? -1
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for snow in screens {
@@ -427,10 +394,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func choosePerformance(_ sender: NSMenuItem) {
-        Preferences.maxPerformance = sender === performanceItems.last
-    }
-
     @objc private func toggleOverFullScreen() {
         Preferences.overFullScreen.toggle()
         for snow in screens { snow.overFullScreen = Preferences.overFullScreen }
@@ -455,15 +418,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             NSLog("Snowpuff: login item change failed: \(error)")
         }
+        SettingsFile.scheduleSave()
     }
 
-    @objc private func checkForUpdates() {
+    @objc private func checkForUpdatesFromMenu() {
         updater.check(asked: true)
     }
 
     @objc private func chooseMode(_ sender: NSMenuItem) {
-        let autumn = sender === autumnItem
-        let raining = sender === rainItem
+        applyMode(sender === rainItem ? .rain : sender === autumnItem ? .autumn : .snow)
+    }
+
+    private func applyMode(_ mode: SnowMode) {
+        let autumn = mode == .autumn
+        let raining = mode == .rain
         guard autumn != Preferences.autumn || raining != Preferences.rain else { return }
         let intoRain = raining && !Preferences.rain
         Preferences.autumn = autumn
@@ -528,6 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         observe(workspace, NSWorkspace.screensDidSleepNotification) { $0.screensAsleep = true }
         observe(workspace, NSWorkspace.screensDidWakeNotification) { $0.screensAsleep = false }
+        observe(workspace, NSWorkspace.didWakeNotification) { $0.updater.checkIfDue() }
         observe(workspace, NSWorkspace.sessionDidResignActiveNotification) { $0.sessionInactive = true }
         observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification) { $0.sessionInactive = false }
         observe(distributed, Notification.Name("com.apple.screenIsLocked")) { $0.screenLocked = true }
@@ -562,4 +531,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             snow.setActive(present && snow.showing && snow.window.occlusionState.contains(.visible))
         }
     }
+}
+
+// MARK: - Settings window and onboarding
+
+extension AppDelegate: SnowControls {
+    func setSnowfall(_ snowfall: Snowfall) { select(snowfall) }
+    func setMode(_ mode: SnowMode) { applyMode(mode) }
+    func setAccumulate(_ on: Bool) { if on != accumulates { toggleAccumulate() } }
+    func setMelt(_ on: Bool) { if on != thaws { toggleMeltSnow() } }
+    func setSnowOnWindows(_ on: Bool) { if on != snowOnWindows { toggleSnowOnWindows() } }
+    func setIcicles(_ on: Bool) { if on != Preferences.icicles { toggleIcicles() } }
+    func setWarmGlow(_ on: Bool) { Preferences.warmGlow = on }
+
+    func setPuff(_ on: Bool, done: @escaping (Bool) -> Void) {
+        guard on != Preferences.puff else { return done(on) }
+        if !on {
+            Preferences.puff = false
+            breath.stop()
+            return done(false)
+        }
+        breath.start { [weak self] started in
+            if started {
+                Preferences.puff = true
+            } else {
+                self?.explainMicrophone()
+            }
+            done(started)
+        }
+    }
+
+    func setSound(_ mode: Ambience.Mode) {
+        Preferences.ambience = mode
+        ambience.mode = mode
+    }
+
+    func setVolume(_ volume: Float) {
+        Preferences.ambienceVolume = volume
+        ambience.volume = volume
+    }
+
+    func setQuietOnCalls(_ on: Bool) { if on != Preferences.quietOnCalls { toggleQuietOnCalls() } }
+    func setBehindWindows(_ on: Bool) { if on != behindWindows { toggleBehindWindows() } }
+    func setOverFullScreen(_ on: Bool) { if on != Preferences.overFullScreen { toggleOverFullScreen() } }
+    func setShowInScreenshots(_ on: Bool) { if on != Preferences.showInScreenshots { toggleScreenshots() } }
+    func setMaxPerformance(_ on: Bool) { Preferences.maxPerformance = on }
+    func setOpenAtLogin(_ on: Bool) { if on != (SMAppService.mainApp.status == .enabled) { toggleOpenAtLogin() } }
+    func setAutoUpdate(_ on: Bool) { Preferences.autoUpdate = on }
+    func clearSnow() { clearAll() }
+    func checkForUpdates() { updater.check(asked: true) }
 }

@@ -1,0 +1,81 @@
+# A tag like v1.3.0 builds both apps and publishes them as a GitHub release, which both apps update from:
+# Snowpuff.dmg for people on a Mac, Snowpuff.zip for the Mac updater, Snowpuff-Setup.exe for Windows.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version from the tag
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" Resources/Info.plist
+      - name: Build
+        run: ./build.sh
+      - name: Disk image and update archive
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent build/Snowpuff.app dist/Snowpuff.zip
+          stage=$(mktemp -d)
+          ditto build/Snowpuff.app "$stage/Snowpuff.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -quiet -volname Snowpuff -srcfolder "$stage" -format UDZO -ov dist/Snowpuff.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/*
+
+  windows:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+      - name: Build
+        working-directory: windows
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          sed -i "0,/^version = /s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          target=x86_64-pc-windows-gnu
+          release=$PWD/target/$target/release
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+          cargo build --release --target $target --bin Snowpuff
+          SNOWPUFF_APP=$release/Snowpuff.exe cargo build --release --target $target --bin Snowpuff-Setup --features setup
+          mkdir -p ../dist
+          cp $release/Snowpuff-Setup.exe ../dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  publish:
+    needs: [mac, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --force --tags origin
+          notes=$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents)')
+          [ -n "$notes" ] || notes="Snowpuff ${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" dist/Snowpuff.dmg dist/Snowpuff.zip dist/Snowpuff-Setup.exe \
+            --title "Snowpuff ${GITHUB_REF_NAME#v}" --notes "$notes"
