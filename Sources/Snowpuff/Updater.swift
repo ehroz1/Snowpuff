@@ -8,7 +8,7 @@ final class Updater {
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     private static let asset = "Snowpuff.zip"
     /// How often a running Snowpuff looks for a new version.
-    private static let interval: TimeInterval = 6 * 60 * 60
+    private static let interval: TimeInterval = 3 * 60 * 60
 
     struct Release {
         let version: String
@@ -22,15 +22,23 @@ final class Updater {
     /// Not now: a call is on, say.
     var mayInstallQuietly: () -> Bool = { true }
     private var timer: Timer?
+    private var lastChecked: Date?
 
     func start() {
         // The first look waits until the snow has settled in.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.check(asked: false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.check(asked: false) }
         timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in self?.check(asked: false) }
+    }
+
+    /// A Mac that slept through the timer looks once it wakes, if the last look was a while ago.
+    func checkIfDue() {
+        guard let lastChecked, Date().timeIntervalSince(lastChecked) > 60 * 60 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.check(asked: false) }
     }
 
     /// `asked` is a check from the menu, which answers even when there's nothing new.
     func check(asked: Bool) {
+        lastChecked = Date()
         if let available, asked {
             install(available, asked: true)
             return

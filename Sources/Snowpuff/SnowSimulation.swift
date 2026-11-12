@@ -488,7 +488,7 @@ final class SnowSimulation {
             let left = Float(surface.frame.minX) + ledgeInset
             let top = Float(surface.frame.maxY)
             let right = Float(surface.frame.maxX) - ledgeInset
-            let columns = Int((Float(surface.frame.width) - 2 * ledgeInset) / columnWidth)
+            let columns = safeInt((Float(surface.frame.width) - 2 * ledgeInset) / columnWidth)
             guard columns >= 8 else { continue }
             seen.insert(surface.id)
 
@@ -639,7 +639,7 @@ final class SnowSimulation {
             let along = oldLeft + shift - left
             let before = (ledge.drift / columnWidth).rounded()
             ledge.drift += along
-            let by = Int((ledge.drift / columnWidth).rounded() - before)
+            let by = safeInt((ledge.drift / columnWidth).rounded() - before)
             var fresh = [Float](repeating: 0, count: columns)
             for i in 0..<ledge.count where ledge.heights[i] > 0 {
                 let j = i + by
@@ -780,8 +780,8 @@ final class SnowSimulation {
     /// wall, which holds up the heap's face as the cursor holds up the snow it touches.
     private func confine(_ ledge: SnowLayer) {
         let count = ledge.count
-        let first = walls.left ? min(max(0, Int((-ledge.base.x / columnWidth - 0.5).rounded(.up))), count) : 0
-        let last = walls.right ? max(min(count - 1, Int(((width - ledge.base.x) / columnWidth - 0.5).rounded(.down))), -1) : count - 1
+        let first = walls.left ? min(max(0, safeInt((-ledge.base.x / columnWidth - 0.5).rounded(.up))), count) : 0
+        let last = walls.right ? max(min(count - 1, safeInt(((width - ledge.base.x) / columnWidth - 0.5).rounded(.down))), -1) : count - 1
         guard first > 0 || last < count - 1 else { return }
         guard first <= last else {
             // Nothing of the window is left this side of the wall: its snow falls down the wall.
@@ -1060,7 +1060,7 @@ final class SnowSimulation {
             for layer in touched { carve(layer, at: center, velocity: .zero, travel: 0, final: true) }
             return
         }
-        let steps = Int(distance / (cursorRadius * 0.5)) + 1
+        let steps = min(max(safeInt(distance / (cursorRadius * 0.5)), 0), 4000) + 1
         for step in 1...steps {
             let position = previous + delta * (Float(step) / Float(steps))
             for layer in touched {
@@ -1071,8 +1071,8 @@ final class SnowSimulation {
 
     private func carve(_ layer: SnowLayer, at center: SIMD2<Float>, velocity: SIMD2<Float>, travel: Float, final: Bool) {
         let radius = cursorRadius
-        let lower = max(0, Int(((center.x - radius - layer.base.x) / columnWidth).rounded(.down)))
-        let upper = min(layer.count - 1, Int(((center.x + radius - layer.base.x) / columnWidth).rounded(.down)))
+        let lower = max(0, safeInt(((center.x - radius - layer.base.x) / columnWidth).rounded(.down)))
+        let upper = min(layer.count - 1, safeInt(((center.x + radius - layer.base.x) / columnWidth).rounded(.down)))
         guard lower <= upper else { return }
 
         let local = center.y - layer.base.y
@@ -1865,7 +1865,7 @@ final class SnowSimulation {
 
     private func updateTarget() {
         let share: Float = autumn ? leafShare : 1
-        targetFlakes = snowfallHeld ? 0 : Int(snowfall.flakesPerMegapoint * share * strength * density * width * height / 1_000_000)
+        targetFlakes = snowfallHeld ? 0 : max(0, safeInt(snowfall.flakesPerMegapoint * share * strength * density * width * height / 1_000_000))
     }
 
     private static func columnCount(for width: Float, columnWidth: Float) -> Int {
