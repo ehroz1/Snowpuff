@@ -39,10 +39,23 @@ final class SceneLight {
             wallpaperTint = .zero
             return
         }
+        // A picture lying in Desktop, Documents or Downloads is behind macOS's file prompt: reading it would make the
+        // system ask "Snowpuff wants to access files on your Desktop". The tint is a nicety, not worth that question.
+        guard !Self.isProtected(url) else {
+            wallpaper = nil
+            wallpaperTint = .zero
+            return
+        }
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         guard wallpaper?.url != url || wallpaper?.modified != modified else { return }
         wallpaper = (url, modified)
         wallpaperTint = Self.tint(fromPictureAt: url) ?? .zero
+    }
+
+    private static func isProtected(_ url: URL) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = url.resolvingSymlinksInPath().path
+        return ["Desktop", "Documents", "Downloads"].contains { path.hasPrefix("\(home)/\($0)/") }
     }
 
     private static func hour(at date: Date) -> Float {
