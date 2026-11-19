@@ -52,9 +52,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
+        # apt on the runners sometimes hangs: give it a few tries, each with a time limit.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q mingw-w64
+          for attempt in 1 2 3; do
+            timeout 240 sudo apt-get update -q -o Acquire::Retries=3 && timeout 300 sudo apt-get install -y -q --no-install-recommends mingw-w64 && break
+            sleep 10
+          done
           rustup target add x86_64-pc-windows-gnu
       - name: Build
         working-directory: windows
