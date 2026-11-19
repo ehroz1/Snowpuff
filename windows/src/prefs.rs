@@ -48,6 +48,25 @@ pub struct Settings {
     pub rain: bool,
     /// Every frame drawn at the display's full rate.
     pub max_performance: bool,
+    pub petals: bool,
+    pub hail: bool,
+    pub mix_rain: bool,
+    pub deep_interaction: bool,
+    pub blizzard: bool,
+    pub fog: bool,
+    pub stars: bool,
+    pub garland: bool,
+    pub frost: bool,
+    pub creatures: bool,
+    pub words: bool,
+    pub sound_effects: bool,
+    pub battery_saver: bool,
+    pub live_weather: bool,
+    /// How much of what falls shows, in percent.
+    pub opacity: u32,
+    /// The version whose news was last shown, as 10300 for 1.3.0.
+    pub seen_version: u32,
+
 }
 
 impl Settings {
@@ -75,6 +94,22 @@ impl Settings {
             autumn: read(w!("autumn")).is_some_and(|v| v != 0),
             rain: read(w!("rain")).is_some_and(|v| v != 0),
             max_performance: read(w!("maxPerformance")).is_some_and(|v| v != 0),
+            petals: read(w!("petals")).is_some_and(|v| v != 0),
+            hail: read(w!("hail")).is_some_and(|v| v != 0),
+            mix_rain: read(w!("mixRain")).is_some_and(|v| v != 0),
+            deep_interaction: read(w!("deepInteraction")).is_some_and(|v| v != 0),
+            blizzard: read(w!("blizzard")).is_none_or(|v| v != 0),
+            fog: read(w!("fog")).is_some_and(|v| v != 0),
+            stars: read(w!("stars")).is_none_or(|v| v != 0),
+            garland: read(w!("garland")).is_some_and(|v| v != 0),
+            frost: read(w!("frost")).is_none_or(|v| v != 0),
+            creatures: read(w!("creatures")).is_none_or(|v| v != 0),
+            words: read(w!("words")).is_some_and(|v| v != 0),
+            sound_effects: read(w!("soundEffects")).is_none_or(|v| v != 0),
+            battery_saver: read(w!("batterySaver")).is_some_and(|v| v != 0),
+            live_weather: read(w!("liveWeather")).is_some_and(|v| v != 0),
+            opacity: read(w!("opacity")).unwrap_or(100).clamp(15, 100),
+            seen_version: read(w!("seenVersion")).unwrap_or(0),
         }
     }
 
@@ -100,6 +135,22 @@ impl Settings {
         write(w!("autumn"), self.autumn as u32);
         write(w!("rain"), self.rain as u32);
         write(w!("maxPerformance"), self.max_performance as u32);
+        write(w!("petals"), self.petals as u32);
+        write(w!("hail"), self.hail as u32);
+        write(w!("mixRain"), self.mix_rain as u32);
+        write(w!("deepInteraction"), self.deep_interaction as u32);
+        write(w!("blizzard"), self.blizzard as u32);
+        write(w!("fog"), self.fog as u32);
+        write(w!("stars"), self.stars as u32);
+        write(w!("garland"), self.garland as u32);
+        write(w!("frost"), self.frost as u32);
+        write(w!("creatures"), self.creatures as u32);
+        write(w!("words"), self.words as u32);
+        write(w!("soundEffects"), self.sound_effects as u32);
+        write(w!("batterySaver"), self.battery_saver as u32);
+        write(w!("liveWeather"), self.live_weather as u32);
+        write(w!("opacity"), self.opacity);
+        write(w!("seenVersion"), self.seen_version);
     }
 }
 

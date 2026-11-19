@@ -2,3 +2,7 @@
 name = "snowpuff-core"
 edition = "2024"
 publish = false
+
+[lib]
+# The Mac app links the static library; the Windows app uses the crate.
+crate-type = ["rlib", "staticlib"]

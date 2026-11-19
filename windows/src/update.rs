@@ -86,6 +86,20 @@ impl Drop for Handle {
     }
 }
 
+/// GETs an https URL, following redirects.
+pub fn get(url: &str) -> Result<Vec<u8>, String> {
+    fetch(url)
+}
+
+/// A new issue on GitHub with the version and the system filled in; nothing is sent until it is submitted.
+pub fn report_link() -> String {
+    let body = format!(
+        "{}%0A%0A%0A—%0ASnowpuff {VERSION}, Windows",
+        if snowpuff::text::russian() { "Что%20случилось%20и%20чего%20ты%20ждал?" } else { "What%20happened,%20and%20what%20did%20you%20expect?" }
+    );
+    format!("https://github.com/{REPOSITORY}/issues/new?body={body}")
+}
+
 /// GETs an https URL, following GitHub's redirects to its download servers.
 fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let rest = url.strip_prefix("https://").ok_or("only https is fetched")?;

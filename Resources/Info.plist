@@ -37,7 +37,13 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Snowpuff. Based on Snowhush © 2026 Mykhailo Bezruchko (MIT).</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Weather Outside makes it snow or rain as it does where you are. The location is rounded and only used to ask open-meteo.com for the weather.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Weather Outside makes it snow or rain as it does where you are. The location is rounded and only used to ask open-meteo.com for the weather.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Snowpuff listens for a puff of breath so you can blow on the snow. Nothing is recorded or sent anywhere.</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
 </dict>
 </plist>

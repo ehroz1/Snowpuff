@@ -20,6 +20,7 @@ struct Uniforms {
     float4 shake;
     float4 hearth;
     float4 hearthLight;
+    float opacity;
 };
 
 struct Sprite {
@@ -64,6 +65,9 @@ struct SpriteOut {
 /// Cocoa palette: glow-300, the warm light from a window.
 constant float3 candle = float3(1.0, 0.824, 0.494);
 
+// EXTRAS: the shared extras are put in here when the shaders are built.
+
+
 static float hash(float2 p) {
     p = fract(p * float2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -78,6 +82,12 @@ static float noise(float x) {
 
 /// Golden, amber, orange, rust or brown, a little lighter or darker.
 static float3 leafColor(float seed) {
+    if (seed > 5.0) {
+        // Cherry blossom: pale pink to white, a few deeper.
+        float k = fract(seed * 7.13);
+        float3 c = k < 0.45 ? float3(1.0, 0.8, 0.86) : (k < 0.8 ? float3(1.0, 0.89, 0.92) : float3(0.98, 0.66, 0.78));
+        return c * (0.94 + 0.08 * fract(seed * 31.7));
+    }
     float k = fract(seed * 7.13);
     float3 c = k < 0.3 ? float3(0.97, 0.78, 0.22)
         : k < 0.55 ? float3(0.95, 0.56, 0.13)
@@ -88,7 +98,7 @@ static float3 leafColor(float seed) {
 }
 
 /// Fallen leaves lying every which way: the topmost at each point shows, the gaps between them in shadow.
-static float3 litter(float2 point) {
+static float3 litter(float2 point, float petals) {
     float2 cell = floor(point / 6.5);
     float top = -1.0;
     float rim = 0.0;
@@ -107,7 +117,7 @@ static float3 litter(float2 point) {
                 if (inside > 0.0 && z > top) {
                     top = z;
                     rim = inside;
-                    color = leafColor(hash(c + 0.5));
+                    color = leafColor(hash(c + 0.5) + petals * 10.0);
                 }
             }
         }
@@ -117,6 +127,35 @@ static float3 litter(float2 point) {
 
 /// A leaf at one moment, `p` running across it from -0.5 to 0.5: its colour, premultiplied.
 static float4 leafAt(float2 p, float seed, float turn, float flip, float alpha, float3 light, float warm) {
+    if (seed > 5.0) {
+        // A cherry petal, notched at its tip, or now and then a whole flower spinning down.
+        float across = max(abs(flip), 0.35);
+        float2 r = float2(cos(turn) * p.x + sin(turn) * p.y, -sin(turn) * p.x + cos(turn) * p.y) * 2.0;
+        r.y /= across;
+        bool flower = fract(seed * 23.1) > 0.94;
+        float inside;
+        float depth;
+        if (flower) {
+            float a = atan2(r.y, r.x);
+            inside = 0.62 * (0.55 + 0.45 * pow(abs(cos(a * 2.5)), 0.8)) - length(r);
+            depth = length(r);
+        } else {
+            float t = (r.x + 0.85) / 1.7;
+            float halfWidth = 0.95 * pow(saturate(t), 0.6) * pow(saturate(1.0 - t), 0.35);
+            float notch = max(0.0, 0.16 - abs(r.y)) * smoothstep(0.78, 1.0, t) * 1.4;
+            inside = min(halfWidth - abs(r.y), min(t, 1.0 - t) * 0.9) - notch;
+            depth = 1.0 - t;
+        }
+        float edge = max(fwidth(inside), 1e-4);
+        float a = smoothstep(-edge, edge, inside) * alpha;
+        float3 color = leafColor(seed);
+        // Deeper pink toward the base, and light shining through the thin petal.
+        color = mix(color, float3(0.95, 0.5, 0.66), saturate(depth - 0.55) * (flower ? 0.0 : 0.6));
+        if (flower) color = mix(color, float3(1.0, 0.85, 0.35), 1.0 - smoothstep(0.08, 0.16, length(r)));
+        color *= (0.86 + 0.14 * abs(flip)) * mix(float3(1.0), light, 0.35);
+        color = mix(color, candle, warm * 0.35);
+        return float4(color * a, a);
+    }
     float across = max(abs(flip), 0.35);
     float2 r = float2(cos(turn) * p.x + sin(turn) * p.y, -sin(turn) * p.x + cos(turn) * p.y) * 2.0;
     r.y /= across;
@@ -185,7 +224,7 @@ static SpriteOut rainVertex(Sprite s, constant Uniforms &u) {
     out.pointSize = extent * u.scale;
     out.streak = travel / extent;
     out.radius = s.size * 0.5 / extent;
-    out.alpha = s.alpha;
+    out.alpha = s.alpha * u.opacity;
     out.light = u.light.rgb;
     out.warm = candlelight(u, s.position);
     out.leaf = kind;
@@ -231,10 +270,108 @@ static float4 rainFragment(SpriteOut in, float2 p) {
     return float4(color * a, a);
 }
 
+
+/// Snowpuff's extras: a sprite whose leaf is below -3.5 is a glow (-4), snowman (-5), cat (-6), bird (-7), fog
+/// puff (-8), hailstone (-9) or snowball (-10). Its turn and flip carry the core's leaf[1] and leaf[2], its smears
+/// the core's spin.
+static SpriteOut extrasVertex(Sprite s, constant Uniforms &u) {
+    SpriteOut out;
+    int kind = int(round(-s.leaf));
+    float2 travel = kind == 4 ? s.velocity * 0.03 : (kind == 9 ? s.velocity * 0.012 : float2(0.0));
+    float extent = kind == 4 ? s.size * 2.4 + length(travel) : (kind == 9 ? s.size * 1.4 + length(travel) : s.size);
+    if (kind == 11) extent = s.size * 3.4;
+    // A piece of cord: its velocity is the piece itself, drawn whole rather than smeared.
+    if (kind == 12) {
+        extent = length(s.velocity) + s.size * 2.0 + 1.0;
+        travel = float2(0.0);
+    }
+    extent = min(max(extent, 2.0 / u.scale), 255.0);
+    out.position = float4((s.position - travel * 0.5 + u.shake.xy) / u.viewSize * 2.0 - 1.0, 0.0, 1.0);
+    out.pointSize = extent * u.scale;
+    out.streak = kind == 12 ? s.velocity / extent : travel / extent;
+    out.radius = s.size * 0.5 / extent;
+    out.alpha = kind == 9 ? s.alpha * u.opacity : s.alpha;
+    out.light = u.light.rgb;
+    out.warm = candlelight(u, s.position);
+    out.tint = float4(s.tintRed, s.tintGreen, s.tintBlue, s.tintAmount);
+    out.leaf = s.leaf;
+    out.turn = s.turn;
+    out.flip = s.flip;
+    out.turnSmear = s.turnSpeed;
+    out.flipSmear = s.flipSpeed;
+    out.reach = extent * u.scale;
+    return out;
+}
+
+static float4 extrasFragment(SpriteOut in, float2 p) {
+    int kind = int(round(-in.leaf));
+    float3 lit = mix(in.light, candle, in.warm * 0.4);
+    float4 color;
+    switch (kind) {
+    case 4: color = spGlow(p, in.streak, in.radius, in.tint.rgb, in.alpha); break;
+    case 5: color = spSnowman(p, in.turn, in.flip, in.turnSmear, in.flipSmear, in.reach, lit) * in.alpha; break;
+    case 6: color = spCat(p, in.turn, in.flip, in.turnSmear, in.flipSmear, in.reach, lit) * in.alpha; break;
+    case 7: color = spBird(p, in.turn, in.flip, in.turnSmear, in.flipSmear, in.reach, lit) * in.alpha; break;
+    case 8: color = spFog(p, in.turn, in.alpha, in.light); break;
+    case 9: color = spHail(p, in.streak, in.radius, in.alpha, lit, in.reach); break;
+    case 11: color = spBulb(p, in.tint.rgb, in.turn, in.flip, in.reach, in.light) * in.alpha; break;
+    case 12: color = spWire(p, in.streak, in.radius, in.light, in.reach) * in.alpha; break;
+    default: color = spSnowball(p, in.turn, in.flip, in.alpha, lit, in.reach); break;
+    }
+    if (color.a < 0.002) discard_fragment();
+    return color;
+}
+
+struct FrostUniforms {
+    float2 viewSize;
+    float time;
+    float cell;
+    float reach;
+    float mist;
+    int columns;
+    int rows;
+    float4 light;
+};
+
+struct FrostOut {
+    float4 position [[position]];
+    float2 world;
+};
+
+/// Frost and mist are drawn as four bands along the screen's edges, as deep as they reach.
+vertex FrostOut frostVertex(uint vid [[vertex_id]], uint band [[instance_id]], constant FrostUniforms &f [[buffer(1)]]) {
+    float2 corner = float2(float(vid & 1), float(vid >> 1));
+    float2 size = f.viewSize;
+    float r = min(f.reach, min(size.x, size.y) * 0.5);
+    float4 box = band == 0 ? float4(0.0, 0.0, size.x, r)
+        : band == 1 ? float4(0.0, size.y - r, size.x, size.y)
+        : band == 2 ? float4(0.0, r, r, size.y - r)
+        : float4(size.x - r, r, size.x, size.y - r);
+    float2 world = mix(box.xy, box.zw, corner);
+    FrostOut out;
+    out.position = float4(world / size * 2.0 - 1.0, 0.0, 1.0);
+    out.world = world;
+    return out;
+}
+
+fragment float4 frostFragment(FrostOut in [[stage_in]], const device float *grid [[buffer(0)]], constant FrostUniforms &f [[buffer(1)]]) {
+    float2 g = in.world / f.cell;
+    int2 i = int2(floor(g));
+    float2 t = g - floor(g);
+    int2 a = clamp(i, int2(0), int2(f.columns - 1, f.rows - 1));
+    int2 b = clamp(i + 1, int2(0), int2(f.columns - 1, f.rows - 1));
+    float v = mix(mix(grid[a.y * f.columns + a.x], grid[a.y * f.columns + b.x], t.x),
+                  mix(grid[b.y * f.columns + a.x], grid[b.y * f.columns + b.x], t.x), t.y);
+    float4 color = spFrost(in.world, v, f.mist, f.time, f.light.rgb, f.viewSize);
+    if (color.a < 0.002) discard_fragment();
+    return color;
+}
+
 vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
                               const device Sprite *sprites [[buffer(0)]],
                               constant Uniforms &u [[buffer(1)]]) {
     Sprite s = sprites[vid];
+    if (s.leaf < -3.5) return extrasVertex(s, u);
     if (s.leaf < 0.0) return rainVertex(s, u);
     if (s.leaf != 0.0) {
         SpriteOut out;
@@ -253,10 +390,11 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
         // Enough moments along the smear that no copy of the leaf stands apart from the next.
         float motion = length(travel) * u.scale + (abs(out.turnSmear) + abs(out.flipSmear)) * pixels * 0.5;
         out.samples = clamp(ceil(motion / 1.2), 1.0, 8.0);
-        out.alpha = s.alpha;
+        out.alpha = s.alpha * u.opacity;
         out.light = u.light.rgb;
         out.warm = candlelight(u, s.position);
-        out.leaf = s.leaf;
+        // In cherry blossom the leaves are petals: their seed is moved up past ten to tell them apart.
+        out.leaf = s.leaf + (u.autumn > 1.5 ? 10.0 : 0.0);
         out.turn = s.turn;
         out.flip = s.flip;
         return out;
@@ -275,7 +413,7 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
     out.streak = streak / extent;
     out.radius = pixels / extent * 0.5;
     // A streak spreads the same flake over more pixels, so each is fainter.
-    out.alpha = s.alpha * min(pixels / 2.0, 1.0) * pixels / max(pixels + length(streak) * 0.6, 0.001);
+    out.alpha = s.alpha * u.opacity * min(pixels / 2.0, 1.0) * pixels / max(pixels + length(streak) * 0.6, 0.001);
     out.soft = s.soft;
     out.tint = float4(s.tintRed, s.tintGreen, s.tintBlue, s.tintAmount);
     out.light = u.light.rgb;
@@ -289,6 +427,7 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
 fragment float4 spriteFragment(SpriteOut in [[stage_in]], float2 coord [[point_coord]], constant Uniforms &u [[buffer(1)]]) {
     // Point coordinates run down the screen; velocities run up.
     float2 p = float2(coord.x - 0.5, 0.5 - coord.y);
+    if (in.leaf < -3.5) return extrasFragment(in, p);
     if (in.leaf < 0.0) return rainFragment(in, p);
     if (in.leaf != 0.0) {
         // The leaf over the exposure, from where it was to where it is now, turning and tumbling on the way.
@@ -382,7 +521,7 @@ fragment float4 pileFragment(PileOut in [[stage_in]],
     float3 color;
     if (u.autumn > 0.5) {
         // Deeper in the heap the leaves lie in shadow.
-        color = litter(grain);
+        color = litter(grain, u.autumn > 1.5 ? 1.0 : 0.0);
         color = mix(color, color * float3(0.62, 0.54, 0.5), saturate(1.0 - exp(-depth / 18.0)) * 0.6);
         color *= 0.84 + 0.2 * light;
     } else {
@@ -475,3 +614,9 @@ fragment float4 icicleFragment(IcicleOut in [[stage_in]], constant Uniforms &u [
     return float4(color * alpha, alpha);
 }
 """
+
+/// The shaders with the shared extras from the app's resources put in.
+func buildShaderSource(extras: String) -> String {
+    let prelude = "#define FN static inline\n#define lerp mix\n#define frac fract\n"
+    return shaderSource.replacingOccurrences(of: "// EXTRAS: the shared extras are put in here when the shaders are built.", with: prelude + extras)
+}

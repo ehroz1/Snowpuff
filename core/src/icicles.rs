@@ -196,6 +196,32 @@ impl Icicles {
         self.dirty = true;
     }
 
+    /// A click on an icicle knocks it off. Returns how high it rings, 1 for the shortest, or None where none hangs.
+    pub fn knock(&mut self, point: V2) -> Option<f32> {
+        let mut hit = None;
+        for eave in self.eaves.values_mut() {
+            let edge = eave.frame.y;
+            if point.y > edge + 2.0 || point.y < edge - 60.0 {
+                continue;
+            }
+            for icicle in eave.hanging.iter_mut().filter(|icicle| icicle.length > 3.0) {
+                let x = eave.frame.x + icicle.x;
+                if (point.x - x).abs() <= icicle.width.max(4.0) + 3.0 && point.y >= edge - icicle.length - 3.0 {
+                    hit = Some((*icicle, eave.frame));
+                    icicle.length = 0.0;
+                    break;
+                }
+            }
+            if hit.is_some() {
+                break;
+            }
+        }
+        let (icicle, frame) = hit?;
+        self.drop(icicle, frame, V2::ZERO);
+        self.dirty = true;
+        Some(1.0 - (icicle.length / 40.0).min(1.0))
+    }
+
     /// Lets every icicle melt away at once, as when all the snow is cleared calmly.
     pub fn melt(&mut self) {
         self.eaves.clear();

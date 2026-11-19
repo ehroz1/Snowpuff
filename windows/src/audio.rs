@@ -13,6 +13,7 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows::core::Result;
 
+use snowpuff_core::sfx::{Cue, Sfx};
 use snowpuff_core::sound::{Ambience, BreathDetector};
 
 use crate::log;
@@ -56,12 +57,14 @@ fn client(capture: bool) -> Result<IAudioClient> {
 /// The winter sound. Settings change through `set`; the thread runs while anything is to be heard, through the fade.
 pub struct Sound {
     ambience: Arc<Mutex<Ambience>>,
+    /// Effects over the ambience: rain, hail, crunching snow, icicles, snowballs, fireworks.
+    sfx: Arc<Mutex<Sfx>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Sound {
     pub fn new() -> Sound {
-        Sound { ambience: Arc::new(Mutex::new(Ambience::new(RATE as f32))), thread: None }
+        Sound { ambience: Arc::new(Mutex::new(Ambience::new(RATE as f32))), sfx: Arc::new(Mutex::new(Sfx::new(RATE as f32))), thread: None }
     }
 
     /// `mode`: 0 off, 1 wind, 2 fireplace, 3 both; `muted` silences it whatever the mode.
@@ -72,25 +75,51 @@ impl Sound {
             ambience.fire = !muted && (mode == 2 || mode == 3);
             ambience.volume = volume.clamp(0.0, 1.0);
             ambience.windiness = windiness;
-            if !ambience.audible() {
-                return;
+        }
+        if let Ok(mut sfx) = self.sfx.lock() {
+            sfx.volume = volume.clamp(0.0, 1.0);
+            if muted {
+                sfx.rain = 0.0;
+                sfx.hail = 0.0;
             }
         }
-        if self.thread.as_ref().is_some_and(|thread| !thread.is_finished()) {
+        self.wake();
+    }
+
+    /// How hard it rains and hails, for their beds of sound; `on` is whether effects are wanted at all.
+    pub fn set_effects(&mut self, on: bool, rain: f32, hail: f32) {
+        if let Ok(mut sfx) = self.sfx.lock() {
+            sfx.rain = if on { rain } else { 0.0 };
+            sfx.hail = if on { hail } else { 0.0 };
+        }
+        self.wake();
+    }
+
+    pub fn play(&mut self, cue: Cue) {
+        if let Ok(mut sfx) = self.sfx.lock() {
+            sfx.play(cue);
+        }
+        self.wake();
+    }
+
+    /// Starts the sound thread when something can be heard and it isn't running.
+    fn wake(&mut self) {
+        let audible = self.ambience.lock().is_ok_and(|a| a.audible()) || self.sfx.lock().is_ok_and(|s| s.audible());
+        if !audible || self.thread.as_ref().is_some_and(|thread| !thread.is_finished()) {
             return;
         }
-        let ambience = self.ambience.clone();
-        self.thread = thread::Builder::new().name("sound".into()).spawn(move || play(&ambience)).ok();
+        let (ambience, sfx) = (self.ambience.clone(), self.sfx.clone());
+        self.thread = thread::Builder::new().name("sound".into()).spawn(move || play(&ambience, &sfx)).ok();
     }
 }
 
-fn play(ambience: &Mutex<Ambience>) {
+fn play(ambience: &Mutex<Ambience>, sfx: &Mutex<Sfx>) {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
     // A device that goes away, as when headphones are unplugged, ends the stream; the default one takes over.
-    while ambience.lock().is_ok_and(|ambience| ambience.audible()) {
-        if let Err(error) = stream(ambience) {
+    while ambience.lock().is_ok_and(|ambience| ambience.audible()) || sfx.lock().is_ok_and(|sfx| sfx.audible()) {
+        if let Err(error) = stream(ambience, sfx) {
             log!("sound: {error}");
             thread::sleep(Duration::from_secs(1));
         }
@@ -98,7 +127,7 @@ fn play(ambience: &Mutex<Ambience>) {
     unsafe { CoUninitialize() };
 }
 
-fn stream(ambience: &Mutex<Ambience>) -> Result<()> {
+fn stream(ambience: &Mutex<Ambience>, sfx: &Mutex<Sfx>) -> Result<()> {
     unsafe {
         let client = client(false)?;
         let size = client.GetBufferSize()?;
@@ -112,7 +141,12 @@ fn stream(ambience: &Mutex<Ambience>) -> Result<()> {
                 let audible = {
                     let Ok(mut ambience) = ambience.lock() else { break };
                     ambience.render(block);
-                    ambience.audible()
+                    let mut heard = ambience.audible();
+                    if let Ok(mut sfx) = sfx.lock() {
+                        sfx.mix(block);
+                        heard |= sfx.audible();
+                    }
+                    heard
                 };
                 let data = render.GetBuffer(free)?;
                 std::ptr::copy_nonoverlapping(block.as_ptr(), data.cast::<f32>(), block.len());

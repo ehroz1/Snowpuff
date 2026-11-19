@@ -18,11 +18,14 @@ use snowpuff_core::geometry::smoothstep;
 #[derive(Clone, Copy)]
 pub struct Sky {
     pub daylight: [f32; 3],
+    /// How much of full daylight there is: 0 at night, 1 by day.
+    pub day: f32,
 }
 
 impl Sky {
     pub fn now() -> Sky {
-        Sky { daylight: daylight(hour()) }
+        let hour = hour();
+        Sky { daylight: daylight(hour), day: daylight_share(hour) }
     }
 }
 

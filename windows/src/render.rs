@@ -23,10 +23,12 @@ use windows_numerics::Matrix3x2;
 
 use snowpuff_core::geometry::V2;
 use snowpuff_core::icicles::{IcicleSprite, Icicles};
+use snowpuff_core::extras::Extras;
 use snowpuff_core::rain::Rain;
 use snowpuff_core::simulation::{COLUMN_WIDTH, SnowSimulation, Sprite};
 
-const SHADERS: &str = include_str!("shaders.hlsl");
+// The extras are shared with the Mac (shaders/extras.shader); FN marks their functions in either language.
+const SHADERS: &str = concat!("#define FN\n", include_str!("../../shaders/extras.shader"), include_str!("shaders.hlsl"));
 /// How far the cursor's candlelight reaches, in points.
 const LANTERN_REACH: f32 = 130.0;
 
@@ -68,7 +70,42 @@ struct Uniforms {
     occluders: [[f32; 4]; 16],
     /// One while leaves fall instead of snow.
     autumn: f32,
-    padding: [f32; 3],
+    /// How much of what falls shows.
+    opacity: f32,
+    padding: [f32; 2],
+}
+
+/// The frost pipeline's constants: `FrostUniforms` in shaders.hlsl.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FrostUniforms {
+    view: [f32; 2],
+    time: f32,
+    cell: f32,
+    reach: f32,
+    mist: f32,
+    columns: i32,
+    rows: i32,
+    light: [f32; 4],
+}
+
+/// Frost on the glass for a frame: its grid, columns, rows, the cell size, how far it reaches, whether it is mist,
+/// and whether the grid changed since the last frame.
+pub struct Frost<'a> {
+    pub values: &'a [f32],
+    pub columns: usize,
+    pub rows: usize,
+    pub cell: f32,
+    pub reach: f32,
+    pub mist: bool,
+    pub changed: bool,
+}
+
+/// How what falls looks: leaves as cherry petals, and how much of it shows.
+#[derive(Clone, Copy)]
+pub struct Look {
+    pub petals: bool,
+    pub opacity: f32,
 }
 
 /// The light the snow is drawn in.
@@ -97,6 +134,9 @@ pub struct Gpu {
     icicle_vertex: ID3D11VertexShader,
     icicle_fragment: ID3D11PixelShader,
     icicle_layout: ID3D11InputLayout,
+    frost_vertex: ID3D11VertexShader,
+    frost_fragment: ID3D11PixelShader,
+    frost_uniforms: ID3D11Buffer,
     blend: ID3D11BlendState,
     raster: ID3D11RasterizerState,
     uniforms: ID3D11Buffer,
@@ -137,6 +177,8 @@ impl Gpu {
             let icicle_code = compile(s!("icicleVertex"), s!("vs_4_0"))?;
             let icicle_vertex = vertex_shader(&device, &icicle_code)?;
             let icicle_fragment = pixel_shader(&device, &compile(s!("icicleFragment"), s!("ps_4_0"))?)?;
+            let frost_vertex = vertex_shader(&device, &compile(s!("frostVertex"), s!("vs_4_0"))?)?;
+            let frost_fragment = pixel_shader(&device, &compile(s!("frostFragment"), s!("ps_4_0"))?)?;
 
             let element = |name: PCSTR, format: DXGI_FORMAT, offset: u32| D3D11_INPUT_ELEMENT_DESC {
                 SemanticName: name,
@@ -192,6 +234,7 @@ impl Gpu {
             device.CreateRasterizerState(&raster_desc, Some(&mut raster))?;
 
             let uniforms = dynamic_buffer(&device, size_of::<Uniforms>(), D3D11_BIND_CONSTANT_BUFFER)?;
+            let frost_uniforms = dynamic_buffer(&device, size_of::<FrostUniforms>(), D3D11_BIND_CONSTANT_BUFFER)?;
 
             Ok(Gpu {
                 device,
@@ -206,6 +249,9 @@ impl Gpu {
                 icicle_vertex,
                 icicle_fragment,
                 icicle_layout: icicle_layout.ok_or_else(Error::empty)?,
+                frost_vertex,
+                frost_fragment,
+                frost_uniforms,
                 blend: blend.ok_or_else(Error::empty)?,
                 raster: raster.ok_or_else(Error::empty)?,
                 uniforms,
@@ -239,6 +285,7 @@ pub struct Surface {
     height_capacity: usize,
     icicles: Option<ID3D11Buffer>,
     icicle_capacity: usize,
+    frost: Option<(ID3D11Buffer, ID3D11ShaderResourceView, usize)>,
 }
 
 impl Surface {
@@ -284,12 +331,28 @@ impl Surface {
                 height_capacity: 0,
                 icicles: None,
                 icicle_capacity: 0,
+                frost: None,
             })
         }
     }
 
-    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, icicles: &Icicles, rain: &Rain, ambient: Ambient, time: f32) -> Result<()> {
-        self.reserve(gpu, simulation.sprite_count() + rain.sprite_count(), simulation.column_count(), icicles.count())?;
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &mut self,
+        gpu: &Gpu,
+        simulation: &SnowSimulation,
+        icicles: &Icicles,
+        rain: &Rain,
+        extras: &Extras,
+        frost: Option<Frost>,
+        look: Look,
+        ambient: Ambient,
+        time: f32,
+    ) -> Result<()> {
+        self.reserve(gpu, simulation.sprite_count() + rain.sprite_count() + extras.sprite_count(), simulation.column_count(), icicles.count())?;
+        if let Some(frost) = &frost {
+            self.upload_frost(gpu, frost)?;
+        }
         let (Some(sprite_buffer), Some((height_buffer, height_view))) = (&self.sprites, &self.heights) else {
             return Ok(());
         };
@@ -299,7 +362,8 @@ impl Surface {
             context.Map(sprite_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
             let all = std::slice::from_raw_parts_mut(mapped.pData.cast::<Sprite>(), self.sprite_capacity);
             let snow = simulation.write_sprites(all);
-            let sprites = snow + rain.write(&mut all[snow..]);
+            let wet = snow + rain.write(&mut all[snow..]);
+            let sprites = wet + extras.write(&mut all[wet..]);
             context.Unmap(sprite_buffer, 0);
 
             context.Map(height_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
@@ -352,8 +416,9 @@ impl Surface {
                 hearth,
                 hearth_light: [HEARTH_SPILL, HEARTH_BRIGHTNESS * warmth, HEARTH_BELOW, 0.0],
                 occluders: [[0.0; 4]; 16],
-                autumn: if simulation.autumn() { 1.0 } else { 0.0 },
-                padding: [0.0; 3],
+                autumn: if !simulation.autumn() { 0.0 } else if look.petals { 2.0 } else { 1.0 },
+                opacity: look.opacity,
+                padding: [0.0; 2],
             };
 
             if !piles.is_empty() {
@@ -402,8 +467,65 @@ impl Surface {
                 context.PSSetShader(&gpu.sprite_fragment, None);
                 context.DrawInstanced(4, sprites as u32, 0, 0);
             }
+            // Frost is on the glass, in front of everything else.
+            if let (Some(frost), Some((_, view, _))) = (&frost, &self.frost)
+                && frost.reach > 0.0
+            {
+                let constants = FrostUniforms {
+                    view: [simulation.width(), simulation.height()],
+                    time,
+                    cell: frost.cell,
+                    reach: frost.reach,
+                    mist: if frost.mist { 1.0 } else { 0.0 },
+                    columns: frost.columns as i32,
+                    rows: frost.rows as i32,
+                    light: [ambient.light[0], ambient.light[1], ambient.light[2], 1.0],
+                };
+                gpu.write(&gpu.frost_uniforms, &constants)?;
+                let frost_constants = [Some(gpu.frost_uniforms.clone())];
+                context.VSSetConstantBuffers(1, Some(&frost_constants));
+                context.PSSetConstantBuffers(1, Some(&frost_constants));
+                context.PSSetShaderResources(1, Some(&[Some(view.clone())]));
+                context.IASetInputLayout(None);
+                context.VSSetShader(&gpu.frost_vertex, None);
+                context.PSSetShader(&gpu.frost_fragment, None);
+                context.DrawInstanced(4, 4, 0, 0);
+            }
             self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()
         }
+    }
+
+    /// Puts the frost grid where the frost shader reads it, when it changed or the buffer is new.
+    fn upload_frost(&mut self, gpu: &Gpu, frost: &Frost) -> Result<()> {
+        let count = frost.values.len().max(1);
+        let fresh = self.frost.as_ref().is_none_or(|(_, _, capacity)| *capacity < count);
+        if fresh {
+            let buffer = dynamic_buffer(&gpu.device, count * size_of::<f32>(), D3D11_BIND_SHADER_RESOURCE)?;
+            let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_R32_FLOAT,
+                ViewDimension: D3D_SRV_DIMENSION_BUFFER,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Buffer: D3D11_BUFFER_SRV {
+                        Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: 0 },
+                        Anonymous2: D3D11_BUFFER_SRV_1 { NumElements: count as u32 },
+                    },
+                },
+            };
+            let mut view = None;
+            unsafe { gpu.device.CreateShaderResourceView(&buffer, Some(&desc), Some(&mut view))? };
+            self.frost = Some((buffer, view.ok_or_else(Error::empty)?, count));
+        }
+        if (fresh || frost.changed)
+            && let Some((buffer, _, _)) = &self.frost
+        {
+            unsafe {
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                gpu.context.Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
+                std::ptr::copy_nonoverlapping(frost.values.as_ptr(), mapped.pData.cast::<f32>(), frost.values.len());
+                gpu.context.Unmap(buffer, 0);
+            }
+        }
+        Ok(())
     }
 
     fn reserve(&mut self, gpu: &Gpu, sprites: usize, columns: usize, icicles: usize) -> Result<()> {

@@ -26,6 +26,7 @@ version = "1.2.0"
 dependencies = [
  "snowpuff-core",
  "windows",
+ "windows-future",
  "windows-numerics",
 ]
 

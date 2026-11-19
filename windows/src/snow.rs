@@ -14,7 +14,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 use snowpuff_core::geometry::V2;
+use snowpuff_core::extras::{Settings as ExtrasSettings, Weather};
 use snowpuff_core::rain;
+use snowpuff_core::sfx::Cue;
 use snowpuff_core::simulation::{ScatterPiece, SnowSimulation, Snowfall};
 
 use crate::desktop::{self, DesktopLayer};
@@ -60,17 +62,24 @@ pub enum Command {
     OverFullScreen(bool),
     /// Every frame at the display's full rate.
     MaxPerformance(bool),
-    /// Leaves fall instead of snow, or snow instead of leaves, once a gust has blown what is there away; when calm, for
-    /// less motion, it melts where it lies instead.
-    SwitchMode {
-        autumn: bool,
-        rain: bool,
+    /// A new mode: 0 snow, 1 leaves, 2 cherry petals, 3 rain, 4 hail. What lies is blown away first, or melts when calm.
+    SetWeather {
+        weather: u8,
         calm: bool,
     },
+    /// Settings that only change how things look or which extras show, taken whole.
+    Refresh(Settings),
+    /// Fireworks for this many seconds.
+    Fireworks(f32),
+    /// Big soft flakes for a few seconds, as when "snow" is typed.
+    Flurry,
     Quit,
 }
 
 /// Raw handles cross to the snow thread as numbers: the thread only waits on the event and posts to the window.
+/// Sounds for the main thread to play, posted with a boxed `Vec<Cue>`.
+pub const WM_CUES: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
+
 pub struct Links {
     pub wake: isize,
     pub controller: isize,
@@ -121,14 +130,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 Command::Quit => return Ok(()),
                 Command::Snowfall(snowfall) => {
                     settings.snowfall = snowfall;
-                    for screen in &mut screens {
-                        if settings.rain {
-                            screen.rain.set_intensity(rain::intensity(snowfall));
-                            screen.rain.set_on(snowfall != Snowfall::Off);
-                        } else {
-                            screen.simulation.set_snowfall(snowfall);
-                        }
-                    }
+                    screens.iter_mut().for_each(|screen| apply(screen, &settings, None));
                 }
                 Command::Accumulate(on) => {
                     settings.accumulate = on;
@@ -182,6 +184,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     for screen in &mut screens {
                         screen.simulation.blow_away(direction, calm);
                         screen.rain.clear();
+                        screen.extras.clear();
                         if calm {
                             screen.icicles.melt();
                         } else {
@@ -211,31 +214,25 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     }
                     log!("hushed: {on}");
                 }
-                Command::SwitchMode { autumn, rain, calm } => {
-                    let into_rain = rain && !settings.rain;
-                    settings.autumn = autumn;
-                    settings.rain = rain;
+                Command::SetWeather { weather, calm } => {
+                    settings.autumn = weather == 1 || weather == 2;
+                    settings.petals = weather == 2;
+                    settings.rain = weather == 3;
+                    settings.hail = weather == 4;
                     let direction = screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
                     let now = Clock::now();
                     screens.iter_mut().for_each(|screen| {
-                        // Rain doesn't lie: what snow or leaves there are blow away as it starts.
-                        if into_rain && autumn == screen.simulation.autumn() {
-                            screen.simulation.blow_away(direction, calm);
-                        }
-                        screen.simulation.switch_mode(autumn, direction, calm);
-                        screen.simulation.set_snowfall(if rain { Snowfall::Off } else { settings.snowfall });
-                        screen.rain.set_intensity(rain::intensity(settings.snowfall));
-                        screen.rain.set_on(rain && settings.snowfall != Snowfall::Off);
-                        // Leaves don't grow icicles: what hangs goes with the snow.
-                        if calm {
-                            screen.icicles.melt();
-                        } else {
-                            screen.icicles.drop_all();
-                        }
-                        screen.icicles.set_enabled(settings.icicles && !autumn && !rain);
+                        apply(screen, &settings, Some((direction, calm)));
                         screen.wake(now);
                     });
                 }
+                Command::Refresh(next) => {
+                    // Only what looks different; switching what falls goes through SetWeather.
+                    settings = Settings { snowfall: settings.snowfall, ..next };
+                    screens.iter_mut().for_each(|screen| apply(screen, &settings, None));
+                }
+                Command::Fireworks(seconds) => screens.iter_mut().for_each(|screen| screen.extras.fireworks(seconds)),
+                Command::Flurry => screens.iter_mut().for_each(|screen| screen.extras.flurry()),
                 Command::MaxPerformance(on) => {
                     settings.max_performance = on;
                     screens.iter_mut().for_each(|screen| screen.max_performance = on);
@@ -290,7 +287,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             if current.len() != screens.len() || screens.iter().any(|screen| !current.contains(&screen.monitor)) {
                 DISPLAYS_CHANGED.set(true);
             }
-            let next = power_budget();
+            let next = power_budget(settings.battery_saver);
             if next != budget {
                 budget = next;
                 log!("power: {budget:?}");
@@ -359,6 +356,16 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     }
                 }
             }
+            // Sounds the extras asked for go to the main thread, which plays them.
+            let cues: Vec<Cue> = screens.iter_mut().flat_map(|screen| screen.cues.drain(..)).collect();
+            if !cues.is_empty() {
+                let cues = Box::into_raw(Box::new(cues));
+                unsafe {
+                    if PostMessageW(Some(HWND(links.controller as _)), WM_CUES, WPARAM(0), LPARAM(cues as isize)).is_err() {
+                        drop(Box::from_raw(cues));
+                    }
+                }
+            }
             // The first display the welcome window's snow reaches starts the snowfall on all of them.
             if released {
                 settings.welcomed = true;
@@ -419,7 +426,10 @@ fn sync_screens(gpu: &Gpu, settings: &Settings, mut current: Vec<Screen>, layer:
             Screen::new(gpu, monitor, simulation, settings, None)
         });
         match screen {
-            Ok(screen) => result.push(screen),
+            Ok(mut screen) => {
+                apply(&mut screen, settings, None);
+                result.push(screen);
+            }
             Err((error, _)) => log!("overlay failed: {error}"),
         }
     }
@@ -448,7 +458,7 @@ fn new_simulation(monitor: &Monitor, settings: &Settings) -> SnowSimulation {
     simulation
 }
 
-fn power_budget() -> PowerBudget {
+fn power_budget(saver: bool) -> PowerBudget {
     let mut status = SYSTEM_POWER_STATUS::default();
     if unsafe { GetSystemPowerStatus(&mut status) }.is_err() {
         return PowerBudget::Full;
@@ -456,7 +466,8 @@ fn power_budget() -> PowerBudget {
     if status.SystemStatusFlag == 1 {
         PowerBudget::Saver
     } else if status.ACLineStatus == 0 {
-        PowerBudget::Battery
+        // Battery Saver in the menu goes easier on the battery still.
+        if saver { PowerBudget::Saver } else { PowerBudget::Battery }
     } else {
         PowerBudget::Full
     }
@@ -504,4 +515,63 @@ impl Stats {
         tracker.listings = 0;
         tracker.cost = 0;
     }
+}
+
+/// The weather the settings ask for.
+pub fn weather(settings: &Settings) -> Weather {
+    if settings.rain {
+        Weather::Rain
+    } else if settings.hail {
+        Weather::Hail
+    } else if settings.petals {
+        Weather::Petals
+    } else if settings.autumn {
+        Weather::Leaves
+    } else {
+        Weather::Snow
+    }
+}
+
+/// Sets a display to the settings: what falls and how hard, how it looks, the icicles and the extras. With a breeze's
+/// direction and calmness, the weather is switching: what lies goes, blown away or melting.
+fn apply(screen: &mut Screen, settings: &Settings, switching: Option<(f32, bool)>) {
+    let weather = weather(settings);
+    let leafy = matches!(weather, Weather::Leaves | Weather::Petals);
+    let piles = matches!(weather, Weather::Snow | Weather::Leaves | Weather::Petals);
+    match switching {
+        Some((direction, calm)) => {
+            if leafy != screen.simulation.autumn() {
+                screen.simulation.switch_mode(leafy, direction, calm);
+            } else if !piles {
+                // Rain and hail don't lie: what snow or leaves there are blow away as they start.
+                screen.simulation.blow_away(direction, calm);
+            }
+            if weather != Weather::Snow {
+                if calm {
+                    screen.icicles.melt();
+                } else {
+                    screen.icicles.drop_all();
+                }
+            }
+        }
+        None => screen.simulation.set_autumn(leafy),
+    }
+    screen.simulation.set_snowfall(if piles { settings.snowfall } else { Snowfall::Off });
+    let rains = weather == Weather::Rain || (settings.mix_rain && piles);
+    let strength = rain::intensity(settings.snowfall);
+    screen.rain.set_intensity(strength * if weather == Weather::Rain { 1.0 } else { 0.6 });
+    screen.rain.set_on(rains && settings.snowfall != Snowfall::Off);
+    screen.icicles.set_enabled(settings.icicles && weather == Weather::Snow);
+    screen.look = crate::render::Look { petals: weather == Weather::Petals, opacity: settings.opacity as f32 / 100.0 };
+    screen.deep = settings.deep_interaction;
+    screen.extras.settings = ExtrasSettings {
+        weather,
+        intensity: strength,
+        blizzard: settings.blizzard,
+        fog: settings.fog,
+        stars: settings.stars,
+        garland: settings.garland,
+        frost: settings.frost,
+        creatures: settings.creatures,
+    };
 }

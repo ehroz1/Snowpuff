@@ -25,6 +25,9 @@ use crate::calls;
 use crate::log;
 use crate::prefs::{self, Settings};
 use crate::snow::{self, Command, Links};
+use crate::{weather, whats_new};
+use snowpuff_core::extras::Weather;
+use snowpuff_core::sfx::Cue;
 use crate::update::{self, Release};
 use crate::welcome::{self, Handlers};
 use snowpuff::text::{russian, tr};
@@ -57,11 +60,13 @@ const ID_AUTO_UPDATE: u32 = 215;
 const ID_DONATE: u32 = 216;
 const ID_SITE: u32 = 217;
 const ID_ABOUT: u32 = 218;
-const ID_SNOW: u32 = 220;
-const ID_AUTUMN: u32 = 221;
 const ID_OVER_FULL_SCREEN: u32 = 222;
-const ID_RAIN: u32 = 223;
 const ID_PERFORMANCE: u32 = 224;
+const TIMER_CLOCK: usize = 4;
+const TIMER_WORDS: usize = 5;
+const TIMER_WEATHER: usize = 6;
+const WM_WHATS_NEW: u32 = WM_APP + 6;
+
 const ID_QUIT: u32 = 299;
 const TIMER_WELCOME: usize = 1;
 const TIMER_CALLS: usize = 2;
@@ -95,6 +100,30 @@ struct App {
     update: Option<Release>,
     /// An update check or download is under way.
     updating: bool,
+    /// The weather outside, while Weather Outside is on, and its line for the menu.
+    outside: Option<weather::Now>,
+    live: Option<String>,
+    /// The watched keys down at the last look, and the order the last few went down in, for "snow".
+    keys_down: u8,
+    typed: Vec<(u8, u32)>,
+    /// The year whose New Year fireworks have gone off.
+    fireworks_year: u16,
+}
+
+impl App {
+    /// The settings with the weather outside in place of the mode and intensity picked, while that is on.
+    fn effective(&self) -> Settings {
+        let mut settings = self.settings;
+        if let Some(now) = self.outside {
+            settings.autumn = false;
+            settings.petals = false;
+            settings.rain = now.weather == 3;
+            settings.hail = now.weather == 4;
+            settings.snowfall = now.snowfall;
+            settings.fog |= now.fog;
+        }
+        settings
+    }
 }
 
 /// What an update thread reports back.
@@ -149,6 +178,24 @@ pub fn run() -> Result<()> {
         if settings.quiet_on_calls {
             SetTimer(Some(window), TIMER_CALLS, 2000, None);
         }
+        SetTimer(Some(window), TIMER_CLOCK, 1000, None);
+        if settings.words {
+            SetTimer(Some(window), TIMER_WORDS, 33, None);
+        }
+        if settings.live_weather {
+            weather::look_outside(window);
+            SetTimer(Some(window), TIMER_WEATHER, 30 * 60 * 1000, None);
+        }
+        // Just updated: say what changed, once. A first run has the welcome instead.
+        let version = version_number(update::VERSION);
+        if settings.welcomed && settings.seen_version != version {
+            let _ = PostMessageW(Some(window), WM_WHATS_NEW, WPARAM(0), LPARAM(0));
+        }
+        if settings.seen_version != version {
+            let mut seen = settings;
+            seen.seen_version = version;
+            seen.save();
+        }
         // The first look for a new version waits until the snow has settled in.
         SetTimer(Some(window), TIMER_UPDATES, 60_000, None);
         let mut app = App {
@@ -167,6 +214,11 @@ pub fn run() -> Result<()> {
             ear: None,
             update: None,
             updating: false,
+            outside: None,
+            live: None,
+            keys_down: 0,
+            typed: Vec::new(),
+            fireworks_year: 0,
         };
         refresh_sound(&mut app);
         if app.settings.puff {
@@ -233,6 +285,75 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
         WM_UPDATE => {
             let result = unsafe { Box::from_raw(lparam.0 as *mut Updated) };
             updated(window, *result, wparam.0 != 0);
+            LRESULT(0)
+        }
+        WM_WHATS_NEW => {
+            whats_new::show();
+            LRESULT(0)
+        }
+        snow::WM_CUES => {
+            let cues = unsafe { Box::from_raw(lparam.0 as *mut Vec<Cue>) };
+            APP.with_borrow_mut(|app| {
+                if let Some(app) = app
+                    && app.settings.sound_effects
+                    && !app.hushed
+                {
+                    cues.iter().for_each(|cue| app.sound.play(*cue));
+                }
+            });
+            LRESULT(0)
+        }
+        weather::WM_WEATHER => {
+            let result = unsafe { Box::from_raw(lparam.0 as *mut std::result::Result<weather::Now, String>) };
+            let failed = APP.with_borrow_mut(|app| {
+                let app = app.as_mut()?;
+                if !app.settings.live_weather {
+                    return None;
+                }
+                match *result {
+                    Ok(now) => {
+                        app.outside = Some(now);
+                        app.live = Some(now.summary(russian()));
+                        let effective = app.effective();
+                        send(app, Command::SetWeather { weather: weather_index(snow::weather(&effective)) as u8, calm: !prefs::animations_enabled() });
+                        send(app, Command::Snowfall(effective.snowfall));
+                        send(app, Command::Refresh(effective));
+                        refresh_sound(app);
+                        None
+                    }
+                    Err(error) => {
+                        app.settings.live_weather = false;
+                        app.settings.save();
+                        Some(error)
+                    }
+                }
+            });
+            if let Some(error) = failed {
+                message_box(window, &error, MB_OK | MB_ICONINFORMATION);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_WEATHER => {
+            weather::look_outside(window);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_CLOCK => {
+            // A surprise nobody is told about: fireworks at midnight on New Year, for three minutes.
+            let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+            if now.wMonth == 1 && now.wDay == 1 && now.wHour == 0 && now.wMinute == 0 {
+                APP.with_borrow_mut(|app| {
+                    if let Some(app) = app
+                        && app.fireworks_year != now.wYear
+                    {
+                        app.fireworks_year = now.wYear;
+                        send(app, Command::Fireworks(180.0));
+                    }
+                });
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_WORDS => {
+            watch_words();
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == TIMER_CALLS => {
@@ -327,6 +448,13 @@ fn refresh_sound(app: &mut App) {
         _ => 0.55,
     };
     app.sound.set(app.settings.ambience, muted, app.settings.volume as f32 / 100.0, windiness);
+    let effective = app.effective();
+    let strength = snowpuff_core::rain::intensity(effective.snowfall);
+    let weather = snow::weather(&effective);
+    let piles = matches!(weather, Weather::Snow | Weather::Leaves | Weather::Petals);
+    let rains = weather == Weather::Rain || (effective.mix_rain && piles);
+    let on = effective.sound_effects && !muted;
+    app.sound.set_effects(on, if rains { strength } else { 0.0 }, if weather == Weather::Hail { strength } else { 0.0 });
 }
 
 /// Opens the microphone for breaths; each puff goes straight to the snow thread.
@@ -391,21 +519,118 @@ fn append(menu: HMENU, flags: MENU_ITEM_FLAGS, id: u32, title: &str) {
     }
 }
 
+/// "snow", or "снег" on a Russian layout, typed anywhere brings a flurry. Only the eight keys those words use are looked
+/// at, and only the order they go down in is kept, for two seconds: nothing typed is read, stored or sent.
+fn watch_words() {
+    // S N O W, and C Y T U where a Russian layout has С Н Е Г.
+    const KEYS: [u16; 8] = [0x53, 0x4E, 0x4F, 0x57, 0x43, 0x59, 0x54, 0x55];
+    let now = unsafe { windows::Win32::System::SystemInformation::GetTickCount() };
+    let typed = APP.with_borrow_mut(|app| {
+        let app = app.as_mut()?;
+        let mut down = 0u8;
+        for (i, key) in KEYS.iter().enumerate() {
+            if unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(*key as i32) } < 0 {
+                down |= 1 << i;
+                if app.keys_down & (1 << i) == 0 {
+                    app.typed.push((i as u8, now));
+                }
+            }
+        }
+        app.keys_down = down;
+        app.typed.retain(|(_, at)| now.wrapping_sub(*at) < 2000);
+        let last: Vec<u8> = app.typed.iter().rev().take(4).rev().map(|(k, _)| *k).collect();
+        if last == [0, 1, 2, 3] || last == [4, 5, 6, 7] {
+            app.typed.clear();
+            send(app, Command::Flurry);
+        }
+        Some(())
+    });
+    let _ = typed;
+}
+
+/// A version as one number for the registry: 1.3.0 is 10300.
+fn version_number(version: &str) -> u32 {
+    version.split('.').take(3).map(|p| p.parse::<u32>().unwrap_or(0)).fold(0, |n, p| n * 100 + p)
+}
+
+/// A setting that only flips on and off and needs nothing but the snow thread told: its title, how to read it from
+/// the settings and how to flip it, and when it can't be changed.
+struct Switch {
+    english: &'static str,
+    russian: &'static str,
+    get: fn(&Settings) -> bool,
+    flip: fn(&mut Settings),
+    enabled: fn(&Settings) -> bool,
+}
+
+const fn switch(english: &'static str, russian: &'static str, get: fn(&Settings) -> bool, flip: fn(&mut Settings)) -> Switch {
+    Switch { english, russian, get, flip, enabled: |_| true }
+}
+
+/// The Magic group in Settings, and a few Behavior and Display switches, all sent to the snow thread as a refresh.
+const SWITCHES: [Switch; 10] = [
+    Switch {
+        english: "Snow on Selection",
+        russian: "Снег на рамке выделения",
+        get: |s| s.deep_interaction,
+        flip: |s| s.deep_interaction = !s.deep_interaction,
+        enabled: |s| s.snow_on_windows,
+    },
+    switch("Typing \"snow\" Brings a Flurry", "Слово «снег» вызывает снегопад", |s| s.words, |s| s.words = !s.words),
+    switch("Swirl Behind the Cursor", "Метель за курсором", |s| s.blizzard, |s| s.blizzard = !s.blizzard),
+    switch("Frost and Misted Glass", "Иней и запотевшее стекло", |s| s.frost, |s| s.frost = !s.frost),
+    switch("Fog", "Туман", |s| s.fog, |s| s.fog = !s.fog),
+    switch("Starry Sky", "Звёздное небо", |s| s.stars, |s| s.stars = !s.stars),
+    switch("Garland on Windows", "Гирлянда на окнах", |s| s.garland, |s| s.garland = !s.garland),
+    switch("Cat and Bullfinch", "Кот и снегирь", |s| s.creatures, |s| s.creatures = !s.creatures),
+    switch("Battery Saver", "Экономить батарею", |s| s.battery_saver, |s| s.battery_saver = !s.battery_saver),
+    switch("Sound Effects", "Звуки эффектов", |s| s.sound_effects, |s| s.sound_effects = !s.sound_effects),
+];
+const ID_SWITCH: u32 = 300;
+const ID_WEATHER: u32 = 230;
+const ID_MIX_RAIN: u32 = 235;
+const ID_LIVE: u32 = 236;
+const ID_WHATS_NEW: u32 = 238;
+const ID_REPORT: u32 = 239;
+const ID_OPACITY: u32 = 260;
+const OPACITIES: [u32; 4] = [25, 50, 75, 100];
+
+/// Days and hours to midnight on New Year, in the menu.
+fn countdown() -> String {
+    let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let leap = |y: u16| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in = [31, if leap(now.wYear) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let day_of_year: u32 = days_in[..now.wMonth as usize - 1].iter().sum::<u32>() + now.wDay as u32;
+    let days_total: u32 = days_in.iter().sum();
+    let minutes_left = (days_total - day_of_year) * 24 * 60 + (23 - now.wHour as u32) * 60 + (60 - now.wMinute as u32);
+    let (days, hours, minutes) = (minutes_left / 1440, minutes_left % 1440 / 60, minutes_left % 60);
+    match (days, russian()) {
+        (0, true) => format!("До Нового года {hours} ч {minutes} мин"),
+        (0, false) => format!("New Year in {hours} h {minutes} min"),
+        (_, true) => format!("До Нового года {days} дн {hours} ч"),
+        (_, false) => format!("New Year in {days} d {hours} h"),
+    }
+}
+
 fn show_menu(window: HWND, x: i32, y: i32) {
-    let Some((settings, pending, updating)) =
-        APP.with_borrow(|app| app.as_ref().map(|app| (app.settings, app.update.as_ref().map(|r| r.version.clone()), app.updating)))
-    else {
+    let Some((settings, pending, updating, live)) = APP.with_borrow(|app| {
+        app.as_ref().map(|app| (app.settings, app.update.as_ref().map(|r| r.version.clone()), app.updating, app.live.clone()))
+    }) else {
         return;
     };
     let login = prefs::opens_at_login();
     let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
     let enabled = |on: bool| if on { MF_ENABLED } else { MF_GRAYED };
+    let weather = snow::weather(&settings);
+    let piles = matches!(weather, Weather::Snow | Weather::Leaves | Weather::Petals);
+    let leafy = matches!(weather, Weather::Leaves | Weather::Petals);
     let chosen = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let Ok(snowfall) = CreatePopupMenu() else { return };
         let Ok(sound) = CreatePopupMenu() else { return };
         let Ok(modes) = CreatePopupMenu() else { return };
-        let Ok(performance) = CreatePopupMenu() else { return };
+        let Ok(options) = CreatePopupMenu() else { return };
+        let Ok(opacity) = CreatePopupMenu() else { return };
         for (i, option) in Snowfall::ALL.iter().enumerate() {
             append(snowfall, MF_STRING, ID_SNOWFALL + i as u32, snowfall_title(*option));
         }
@@ -419,50 +644,79 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(sound, MF_SEPARATOR, 0, PCWSTR::null());
         for (i, volume) in VOLUMES.iter().enumerate() {
             let title = if russian() { format!("Громкость {volume}%") } else { format!("Volume {volume}%") };
-            append(sound, MF_STRING | enabled(settings.ambience != 0), ID_VOLUME + i as u32, &title);
+            append(sound, MF_STRING, ID_VOLUME + i as u32, &title);
         }
         let nearest = VOLUMES.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(settings.volume)).map_or(1, |(i, _)| i) as u32;
         let _ = CheckMenuRadioItem(sound, ID_VOLUME, ID_VOLUME + 3, ID_VOLUME + nearest, MF_BYCOMMAND.0);
+        let _ = AppendMenuW(sound, MF_SEPARATOR, 0, PCWSTR::null());
+        append(sound, MF_STRING | checked(settings.sound_effects), ID_SWITCH + 9, tr("Sound Effects", "Звуки эффектов"));
 
+        // Mode: what falls.
+        let titles = [
+            tr("Snow", "Снег"),
+            tr("Autumn Leaves", "Осенние листья"),
+            tr("Cherry Blossom", "Цветущая сакура"),
+            tr("Rain", "Дождь"),
+            tr("Hail", "Град"),
+        ];
+        for (i, title) in titles.iter().enumerate() {
+            append(modes, MF_STRING | enabled(live.is_none()), ID_WEATHER + i as u32, title);
+        }
+        let _ = CheckMenuRadioItem(modes, ID_WEATHER, ID_WEATHER + 4, ID_WEATHER + weather_index(weather), MF_BYCOMMAND.0);
+        let _ = AppendMenuW(modes, MF_SEPARATOR, 0, PCWSTR::null());
+        append(modes, MF_STRING | checked(settings.mix_rain) | enabled(piles), ID_MIX_RAIN, tr("Add Rain", "Добавить дождь"));
+        let outside = match &live {
+            Some(now) if russian() => format!("Погода за окном: {now}"),
+            Some(now) => format!("Weather Outside: {now}"),
+            None => tr("Weather Outside", "Погода за окном").to_string(),
+        };
+        append(modes, MF_STRING | checked(settings.live_weather), ID_LIVE, &outside);
+
+        // Settings, in groups.
+        let header = |menu: HMENU, title: &str| append(menu, MF_STRING | MF_GRAYED, 0, title);
         let on_windows = settings.snow_on_windows && !settings.behind_windows;
-        append(modes, MF_STRING, ID_SNOW, tr("Snow", "Снег"));
-        append(modes, MF_STRING, ID_AUTUMN, tr("Autumn Leaves", "Осенние листья"));
-        append(modes, MF_STRING, ID_RAIN, tr("Rain", "Дождь"));
-        let mode = if settings.rain { ID_RAIN } else if settings.autumn { ID_AUTUMN } else { ID_SNOW };
-        let _ = CheckMenuRadioItem(modes, ID_SNOW, ID_RAIN, mode, MF_BYCOMMAND.0);
-        let autumn = settings.autumn;
-        let raining = settings.rain;
-        let pick = |snow: &'static str, leaves: &'static str| if autumn { leaves } else { snow };
+        let pick = |snow: &'static str, leaves: &'static str| if leafy { leaves } else { snow };
+        header(options, tr("— Behavior —", "— Поведение —"));
+        append(options, MF_STRING | checked(settings.accumulate) | enabled(piles), ID_ACCUMULATE, tr("Accumulate on the Ground", "Сугробы на земле"));
+        append(options, MF_STRING | checked(settings.snow_on_windows) | enabled(!settings.behind_windows), ID_WINDOWS, pick(tr("Snow on Windows", "Снег на окнах"), tr("Leaves on Windows", "Листья на окнах")));
+        append(options, MF_STRING | checked(settings.melt) | enabled(settings.accumulate && piles), ID_MELT, if weather == Weather::Petals { tr("Wilt Petals", "Лепестки вянут") } else { pick(tr("Melt Snow", "Таяние"), tr("Wither Leaves", "Листья вянут")) });
+        append(options, MF_STRING | checked(settings.icicles) | enabled(on_windows && weather == Weather::Snow), ID_ICICLES, tr("Icicles", "Сосульки"));
+        append(options, MF_STRING | checked(settings.warm_glow) | enabled(on_windows), ID_GLOW, tr("Warm Window Light", "Тёплый свет окна"));
+        append(options, MF_STRING | checked(settings.puff), ID_PUFF, tr("Blow on the Snow (Microphone)", "Подуть на снег (микрофон)"));
+        append(options, MF_STRING | checked(settings.quiet_on_calls), ID_QUIET, tr("Hide During Calls", "Прятать на созвонах"));
+        for (i, item) in SWITCHES.iter().enumerate().take(2) {
+            append(options, MF_STRING | checked((item.get)(&settings)) | enabled((item.enabled)(&settings)), ID_SWITCH + i as u32, tr(item.english, item.russian));
+        }
+        header(options, tr("— Magic —", "— Волшебство —"));
+        for (i, item) in SWITCHES.iter().enumerate().skip(2).take(6) {
+            append(options, MF_STRING | checked((item.get)(&settings)) | enabled((item.enabled)(&settings)), ID_SWITCH + i as u32, tr(item.english, item.russian));
+        }
+        header(options, tr("Alt + move: draw on frost · Alt held on a drift: snowman · Alt-click: snowball", "Alt + курсор: рисовать по инею · Alt на сугробе: снеговик · Alt + клик: снежок"));
+        header(options, tr("— Display —", "— Отображение —"));
+        append(options, MF_STRING | checked(settings.behind_windows), ID_BEHIND, tr("Behind Windows", "За окнами"));
+        append(options, MF_STRING | checked(settings.over_full_screen) | enabled(!settings.behind_windows), ID_OVER_FULL_SCREEN, tr("Show over Full Screen", "Поверх полноэкранных приложений"));
+        append(options, MF_STRING | checked(settings.behind_taskbar), ID_TASKBAR, tr("Behind Taskbar", "За панелью задач"));
+        append(options, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS, tr("Show in Screenshots", "Показывать на скриншотах"));
+        append(options, MF_STRING | checked(settings.max_performance), ID_PERFORMANCE, tr("Max Performance", "Максимальная плавность"));
+        append(options, MF_STRING | checked(settings.battery_saver), ID_SWITCH + 8, tr("Battery Saver", "Экономить батарею"));
+        for (i, value) in OPACITIES.iter().enumerate() {
+            append(opacity, MF_STRING, ID_OPACITY + i as u32, &format!("{value}%"));
+        }
+        let near = OPACITIES.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(settings.opacity)).map_or(3, |(i, _)| i) as u32;
+        let _ = CheckMenuRadioItem(opacity, ID_OPACITY, ID_OPACITY + 3, ID_OPACITY + near, MF_BYCOMMAND.0);
+        append(options, MF_POPUP, opacity.0 as u32, tr("Opacity of What Falls", "Прозрачность падающего"));
+        header(options, tr("— General —", "— Общие —"));
+        append(options, MF_POPUP, sound.0 as u32, tr("Sound", "Звук"));
+        append(options, MF_STRING | checked(login), ID_LOGIN, tr("Open at Login", "Открывать при входе"));
+        append(options, MF_STRING | checked(settings.auto_update), ID_AUTO_UPDATE, tr("Update Automatically", "Обновлять автоматически"));
+
         append(menu, MF_POPUP, snowfall.0 as u32, tr("Intensity", "Интенсивность"));
         append(menu, MF_POPUP, modes.0 as u32, tr("Mode", "Режим"));
+        append(menu, MF_STRING | enabled(piles), ID_CLEAR, pick(tr("Clear Snow", "Смести весь снег"), tr("Clear Leaves", "Смести все листья")));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        // Rain doesn't pile up, so what is about piles steps aside.
-        append(menu, MF_STRING | checked(settings.accumulate) | enabled(!raining), ID_ACCUMULATE, tr("Accumulate", "Сугробы"));
-        append(menu, MF_STRING | checked(settings.melt) | enabled(settings.accumulate && !raining), ID_MELT, pick(tr("Melt Snow", "Таяние"), tr("Wither Leaves", "Листья вянут")));
-        append(menu, MF_STRING | checked(settings.snow_on_windows) | enabled(!settings.behind_windows), ID_WINDOWS, if raining { tr("Rain on Windows", "Дождь на окнах") } else { pick(tr("Snow on Windows", "Снег на окнах"), tr("Leaves on Windows", "Листья на окнах")) });
-        append(menu, MF_STRING | checked(settings.icicles) | enabled(on_windows && !autumn && !raining), ID_ICICLES, tr("Icicles", "Сосульки"));
-        append(menu, MF_STRING | checked(settings.warm_glow) | enabled(on_windows), ID_GLOW, tr("Warm Window Light", "Тёплый свет окна"));
-        append(menu, MF_STRING | enabled(!raining), ID_CLEAR, pick(tr("Clear Snow", "Смести весь снег"), tr("Clear Leaves", "Смести все листья")));
+        header(menu, &countdown());
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        append(menu, MF_STRING | checked(settings.puff), ID_PUFF, tr("Blow on the Snow (Microphone)", "Подуть на снег (микрофон)"));
-        append(menu, MF_POPUP, sound.0 as u32, tr("Sound", "Звук"));
-        append(menu, MF_STRING | checked(settings.quiet_on_calls), ID_QUIET, tr("Hide During Calls", "Прятать на созвонах"));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        append(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND, tr("Behind Windows", "За окнами"));
-        append(
-            menu,
-            MF_STRING | checked(settings.over_full_screen) | enabled(!settings.behind_windows),
-            ID_OVER_FULL_SCREEN,
-            tr("Show over Full Screen", "Поверх полноэкранных приложений"),
-        );
-        append(menu, MF_STRING | checked(settings.behind_taskbar), ID_TASKBAR, tr("Behind Taskbar", "За панелью задач"));
-        append(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS, tr("Show in Screenshots", "Показывать на скриншотах"));
-        append(performance, MF_STRING, ID_PERFORMANCE, tr("Default", "Обычная"));
-        append(performance, MF_STRING, ID_PERFORMANCE + 1, tr("Max", "Максимальная"));
-        let chosen_rate = ID_PERFORMANCE + settings.max_performance as u32;
-        let _ = CheckMenuRadioItem(performance, ID_PERFORMANCE, ID_PERFORMANCE + 1, chosen_rate, MF_BYCOMMAND.0);
-        append(menu, MF_POPUP, performance.0 as u32, tr("Performance", "Производительность"));
-        append(menu, MF_STRING | checked(login), ID_LOGIN, tr("Open at Login", "Открывать при входе"));
+        append(menu, MF_POPUP, options.0 as u32, tr("Settings", "Настройки"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let updates = match (&pending, updating) {
             (_, true) => tr("Updating…", "Обновление…").to_string(),
@@ -470,7 +724,8 @@ fn show_menu(window: HWND, x: i32, y: i32) {
             (None, _) => tr("Check for Updates…", "Проверить обновления…").to_string(),
         };
         append(menu, MF_STRING | enabled(!updating), ID_UPDATES, &updates);
-        append(menu, MF_STRING | checked(settings.auto_update), ID_AUTO_UPDATE, tr("Update Automatically", "Обновлять автоматически"));
+        append(menu, MF_STRING, ID_WHATS_NEW, tr("What's New", "Что нового"));
+        append(menu, MF_STRING, ID_REPORT, tr("Report a Problem…", "Сообщить о проблеме…"));
         let about = if russian() { format!("Snowpuff {} на GitHub", update::VERSION) } else { format!("Snowpuff {} on GitHub", update::VERSION) };
         append(menu, MF_STRING, ID_ABOUT, &about);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -489,10 +744,29 @@ fn show_menu(window: HWND, x: i32, y: i32) {
     choose(window, chosen, login);
 }
 
+fn weather_index(weather: Weather) -> u32 {
+    match weather {
+        Weather::Snow => 0,
+        Weather::Leaves => 1,
+        Weather::Petals => 2,
+        Weather::Rain => 3,
+        Weather::Hail => 4,
+    }
+}
+
+/// Tells the snow thread the settings changed in ways that only refresh what it shows, and saves them.
+fn refresh(app: &mut App) {
+    app.settings.save();
+    send(app, Command::Refresh(app.effective()));
+    refresh_sound(app);
+}
+
 fn choose(window: HWND, chosen: u32, login: bool) {
     match chosen {
         0 => {}
         ID_QUIT => quit(window),
+        ID_WHATS_NEW => whats_new::show(),
+        ID_REPORT => update::open(&update::report_link()),
         ID_UPDATES => {
             let pending = APP.with_borrow(|app| app.as_ref().and_then(|app| app.update.clone()));
             match pending {
@@ -538,6 +812,59 @@ fn choose(window: HWND, chosen: u32, login: bool) {
                 set_hushed(app, false, window);
             }
         }),
+        ID_LIVE => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.live_weather = !app.settings.live_weather;
+            app.settings.save();
+            if app.settings.live_weather {
+                weather::look_outside(window);
+                unsafe { SetTimer(Some(window), TIMER_WEATHER, 30 * 60 * 1000, None) };
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(window), TIMER_WEATHER);
+                }
+                app.live = None;
+                app.outside = None;
+                let effective = app.effective();
+                send(app, Command::SetWeather { weather: weather_index(snow::weather(&effective)) as u8, calm: !prefs::animations_enabled() });
+                send(app, Command::Refresh(effective));
+            }
+        }),
+        _ if (ID_WEATHER..ID_WEATHER + 5).contains(&chosen) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            let index = chosen - ID_WEATHER;
+            let settings = &mut app.settings;
+            settings.autumn = index == 1 || index == 2;
+            settings.petals = index == 2;
+            settings.rain = index == 3;
+            settings.hail = index == 4;
+            settings.save();
+            send(app, Command::SetWeather { weather: index as u8, calm: !prefs::animations_enabled() });
+            refresh_sound(app);
+            refresh_icon(window, app);
+        }),
+        _ if (ID_SWITCH..ID_SWITCH + SWITCHES.len() as u32).contains(&chosen) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            (SWITCHES[(chosen - ID_SWITCH) as usize].flip)(&mut app.settings);
+            unsafe {
+                if app.settings.words {
+                    SetTimer(Some(window), TIMER_WORDS, 33, None);
+                } else {
+                    let _ = KillTimer(Some(window), TIMER_WORDS);
+                }
+            }
+            refresh(app);
+        }),
+        ID_MIX_RAIN => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.mix_rain = !app.settings.mix_rain;
+            refresh(app);
+        }),
+        _ if (ID_OPACITY..ID_OPACITY + 4).contains(&chosen) => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.opacity = OPACITIES[(chosen - ID_OPACITY) as usize];
+            refresh(app);
+        }),
         _ if (ID_SOUND..ID_SOUND + 4).contains(&chosen) || (ID_VOLUME..ID_VOLUME + 4).contains(&chosen) => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };
             if chosen >= ID_VOLUME {
@@ -548,19 +875,6 @@ fn choose(window: HWND, chosen: u32, login: bool) {
             app.settings.save();
             refresh_sound(app);
         }),
-        ID_SNOW | ID_AUTUMN | ID_RAIN => {
-            let (autumn, rain) = (chosen == ID_AUTUMN, chosen == ID_RAIN);
-            APP.with_borrow_mut(|app| {
-                let Some(app) = app else { return };
-                if autumn == app.settings.autumn && rain == app.settings.rain {
-                    return;
-                }
-                app.settings.autumn = autumn;
-                app.settings.rain = rain;
-                app.settings.save();
-                send(app, Command::SwitchMode { autumn, rain, calm: !prefs::animations_enabled() });
-            });
-        }
         _ => APP.with_borrow_mut(|app| {
             let Some(app) = app else { return };
             let settings = &mut app.settings;
@@ -593,8 +907,8 @@ fn choose(window: HWND, chosen: u32, login: bool) {
                     settings.behind_taskbar = !settings.behind_taskbar;
                     Command::BehindTaskbar(settings.behind_taskbar)
                 }
-                ID_PERFORMANCE | 225 => {
-                    settings.max_performance = chosen != ID_PERFORMANCE;
+                ID_PERFORMANCE => {
+                    settings.max_performance = !settings.max_performance;
                     Command::MaxPerformance(settings.max_performance)
                 }
                 ID_OVER_FULL_SCREEN => {

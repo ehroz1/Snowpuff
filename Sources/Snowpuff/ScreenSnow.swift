@@ -1,4 +1,5 @@
 import AppKit
+import CSnowpuffCore
 import MetalKit
 
 /// The snow on one display: its overlay window, simulation and renderer, the windows tracked on it and its light.
@@ -14,6 +15,14 @@ final class ScreenSnow {
     private(set) var screen: NSScreen
     let icicles = Icicles()
     let rain: Rain
+    let extras: SceneExtras
+    /// The windows from the last poll, for a drag selection to join.
+    private var lastSurfaces: [WindowSurface] = []
+    /// A selection being dragged across the desktop: where it started, and whether one showed last frame.
+    private var selectionStart: CGPoint?
+    private var selectionShown = false
+    private var lastSelectionAt: CFTimeInterval = 0
+    private static let selectionID: CGWindowID = 0x5E1E_C7ED
     var autumn: Bool {
         get { simulation.autumn }
         set { simulation.autumn = newValue }
@@ -53,6 +62,7 @@ final class ScreenSnow {
         self.displayID = displayID
         self.screen = screen
         rain = Rain(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        extras = SceneExtras(width: Float(screen.frame.width), height: Float(screen.frame.height))
         rain.intensity = Rain.intensity(Preferences.snowfall)
         rain.on = Preferences.rain && Preferences.snowfall != .off
         self.simulation = simulation
@@ -73,11 +83,34 @@ final class ScreenSnow {
             // Behind the windows the snow still settles on them: what lies on a window's top edge is above it, in
             // plain view.
             guard snowOnWindows() else { return nil }
-            let update = tracker.poll(now: now, eager: NSEvent.pressedMouseButtons != 0)
-            simulation.windowFrames = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
+            let polled = tracker.poll(now: now, eager: NSEvent.pressedMouseButtons != 0)
+            let covers = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
+            simulation.windowFrames = covers
+            var update = polled.map { polled in
+                // The Dock can be left bare from the Accumulate menu.
+                Preferences.snowOnDock ? polled : WindowUpdate(
+                    surfaces: polled.surfaces.filter { !$0.isDock }, interval: polled.interval, parked: polled.parked,
+                    elsewhere: polled.elsewhere, sliding: polled.sliding, slideVelocity: polled.slideVelocity
+                )
+            }
+            if let update { lastSurfaces = update.surfaces }
+            // A selection dragged across the desktop catches the snow too, while it is held.
+            let selection = selection(covers: covers)
+            if selection != nil || selectionShown {
+                let interval = Float(min(max(now - lastSelectionAt, 1.0 / 120), 0.25))
+                lastSelectionAt = now
+                let extra = selection.map { [WindowSurface(id: Self.selectionID, frame: $0, blockers: [], cornerRadius: 1, cornerExponent: 2, isDock: false)] } ?? []
+                update = WindowUpdate(
+                    surfaces: lastSurfaces + extra, interval: update?.interval ?? interval, parked: update?.parked ?? [],
+                    elsewhere: update?.elsewhere ?? [], sliding: false, slideVelocity: 0
+                )
+                selectionShown = selection != nil
+            }
+            if polled != nil { extras.setCovers(covers) }
             if let update {
                 icicles.update(update.surfaces, interval: update.interval, keep: update.parked.union(update.elsewhere), sliding: update.sliding)
                 rain.updateWindows(update.surfaces, interval: Double(update.interval))
+                extras.setWindows(update.surfaces)
             }
             return update
         }
@@ -88,6 +121,13 @@ final class ScreenSnow {
         icicles.enabled = Preferences.icicles && !Preferences.autumn && !Preferences.rain
         renderer.icicles = icicles
         renderer.rain = rain
+        renderer.extras = extras
+        renderer.daylight = { [unowned self] in light.day }
+        renderer.topInset = Float(screen.frame.maxY - screen.visibleFrame.maxY)
+        renderer.interaction = {
+            (NSEvent.pressedMouseButtons & 1 != 0, NSEvent.modifierFlags.contains(.option))
+        }
+        renderer.opacity = Preferences.opacity
         renderer.warmGlow = { Preferences.warmGlow && snowOnWindows() }
         renderer.focusedWindow = { [unowned self] in window.behindWindows ? nil : tracker.focused }
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
@@ -102,7 +142,7 @@ final class ScreenSnow {
             showing = false
         }
         // A full-screen app can come and go without a Space change being announced, as a video going full screen.
-        lookout = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in self?.checkFullScreen() }
+        lookout = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.checkFullScreen() }
     }
 
     /// Fades the snow out of a full-screen app's way, or back once it goes.
@@ -138,6 +178,8 @@ final class ScreenSnow {
         Renderer.fitDrawable(of: view)
         simulation.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
         rain.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        extras.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        renderer.topInset = Float(screen.frame.maxY - screen.visibleFrame.maxY)
         light.invalidate()
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
         measure()
@@ -156,6 +198,49 @@ final class ScreenSnow {
         guard view.isPaused == active else { return }
         view.isPaused = !active
         if active { renderer.resetClock() }
+    }
+
+    /// Leaves are drawn as cherry petals.
+    var petals: Bool {
+        get { renderer.petals }
+        set { renderer.petals = newValue }
+    }
+
+    var opacity: Float {
+        get { renderer.opacity }
+        set { renderer.opacity = newValue }
+    }
+
+    /// Sounds the extras ask for.
+    var cues: ([SPCue]) -> Void {
+        get { renderer.cues }
+        set { renderer.cues = newValue }
+    }
+
+    /// The point on this screen in its overlay's coordinates, if it is on it.
+    func local(_ point: NSPoint) -> SIMD2<Float>? {
+        guard window.frame.contains(point) else { return nil }
+        return SIMD2(Float(point.x - window.frame.minX), Float(point.y - window.frame.minY))
+    }
+
+    /// A rectangle being dragged out on the desktop, in overlay coordinates: started on no window, in Finder.
+    private func selection(covers: [SIMD4<Float>]) -> CGRect? {
+        guard Preferences.deepInteraction, NSEvent.pressedMouseButtons & 1 != 0, !NSEvent.modifierFlags.contains(.option),
+              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
+        else {
+            selectionStart = nil
+            return nil
+        }
+        let mouse = NSEvent.mouseLocation
+        let point = CGPoint(x: mouse.x - window.frame.minX, y: mouse.y - window.frame.minY)
+        if selectionStart == nil {
+            let onWindow = covers.contains { Float(point.x) >= $0.x && Float(point.x) <= $0.z && Float(point.y) >= $0.y && Float(point.y) <= $0.w }
+            guard window.frame.contains(mouse), !onWindow else { return nil }
+            selectionStart = point
+        }
+        guard let start = selectionStart else { return nil }
+        let rect = CGRect(x: min(start.x, point.x), y: min(start.y, point.y), width: abs(point.x - start.x), height: abs(point.y - start.y))
+        return rect.width > 12 && rect.height > 12 ? rect : nil
     }
 
     func dropWindowSnow() {

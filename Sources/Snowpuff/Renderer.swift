@@ -1,3 +1,4 @@
+import CSnowpuffCore
 import MetalKit
 import QuartzCore
 
@@ -24,6 +25,20 @@ struct Uniforms {
     var hearth = SIMD4<Float>(0, 0, 0, 0)
     /// How far the glow spills sideways, how bright it is, and how far it reaches below the window.
     var hearthLight = SIMD4<Float>(0, 0, 0, 0)
+    /// How much of the falling snow, leaves, petals, rain and hail shows; what lies stays solid.
+    var opacity: Float = 1
+}
+
+/// What the frost pipeline needs: shaders/extras.shader and frostFragment in Shaders.swift.
+struct FrostUniforms {
+    var viewSize: SIMD2<Float>
+    var time: Float
+    var cell: Float
+    var reach: Float
+    var mist: Float
+    var columns: Int32
+    var rows: Int32
+    var light: SIMD4<Float>
 }
 
 enum RendererError: Error {
@@ -46,6 +61,20 @@ final class Renderer: NSObject, MTKViewDelegate {
     var warmGlow: () -> Bool = { true }
     var icicles: Icicles?
     var rain: Rain?
+    var extras: SceneExtras?
+    /// The main mouse button, and the modifier that reaches into the scene.
+    var interaction: () -> (button: Bool, magic: Bool) = { (false, false) }
+    var daylight: () -> Float = { 1 }
+    /// Room the menu bar takes along the top.
+    var topInset: Float = 0
+    /// Sounds the extras asked for.
+    var cues: ([SPCue]) -> Void = { _ in }
+    /// Leaves are drawn as cherry petals.
+    var petals = false
+    var opacity: Float = 1
+    private var frostPipeline: MTLRenderPipelineState?
+    private var frostBuffer: MTLBuffer?
+    private var frostState = SPFrost()
     private var hearth = SIMD4<Float>(repeating: 0)
     private var hearthStrength: Float = 0
 
@@ -72,7 +101,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     init(device: MTLDevice, pixelFormat: MTLPixelFormat, simulation: SnowSimulation) throws {
         guard let queue = device.makeCommandQueue() else { throw RendererError.unavailable }
-        let library = try device.makeLibrary(source: shaderSource, options: nil)
+        let library = try device.makeLibrary(source: buildShaderSource(extras: Self.extrasSource), options: nil)
 
         func pipeline(_ vertex: String, _ fragment: String) throws -> MTLRenderPipelineState {
             let descriptor = MTLRenderPipelineDescriptor()
@@ -96,10 +125,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.pilePipeline = try pipeline("pileVertex", "pileFragment")
         self.iciclePipeline = try pipeline("icicleVertex", "icicleFragment")
         super.init()
+        frostPipeline = try? pipeline("frostVertex", "frostFragment")
         icicleBuffers = (0..<framesInFlight).compactMap { _ in
             device.makeBuffer(length: icicleCapacity * MemoryLayout<IcicleSprite>.stride, options: [.storageModeShared, .cpuCacheModeWriteCombined])
         }
     }
+
+    /// The extras' shaders, shared with Windows, from the app's resources.
+    static let extrasSource: String = {
+        guard let url = Bundle.main.url(forResource: "extras", withExtension: "shader"),
+              let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return "" }
+        return text
+    }()
 
     func resetClock() {
         lastTime = 0
@@ -140,9 +178,35 @@ final class Renderer: NSObject, MTKViewDelegate {
             raining = true
             changed = true
         }
+        var extrasSmooth = false
+        if let extras {
+            let size = SIMD2(simulation.width, simulation.height)
+            let inside = cursor.x >= 0 && cursor.y >= 0 && cursor.x <= size.x && cursor.y <= size.y
+            let input = interaction()
+            let simulation = simulation
+            extras.step(
+                dt: dt, cursor: inside ? cursor : nil, button: input.button, magic: input.magic,
+                daylight: daylight(), topInset: topInset, width: size.x, ground: { simulation.groundLevel(at: $0) }
+            )
+            let heard = extras.takeCues()
+            if !heard.isEmpty { cues(heard) }
+            if extras.isActive { changed = true }
+            extrasSmooth = extras.needsSmooth
+            frostState = extras.frost()
+            if frostState.changed != 0 {
+                changed = true
+                let length = Int(frostState.columns * frostState.rows) * MemoryLayout<Float>.stride
+                if frostBuffer == nil || frostBuffer!.length < length {
+                    frostBuffer = device.makeBuffer(length: length, options: [.storageModeShared])
+                }
+                if let frostBuffer, let values = frostState.values {
+                    frostBuffer.contents().copyMemory(from: values, byteCount: length)
+                }
+            }
+        }
         let hearthMoved = updateHearth(dt: dt)
         // The lantern follows the cursor even over snow that lies still; the window glow and falling icicles need a smooth rate too.
-        let lanternMoved = (ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5) || hearthMoved || (icicles?.isFalling ?? false) || raining
+        let lanternMoved = (ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5) || hearthMoved || (icicles?.isFalling ?? false) || raining || extrasSmooth
         lanternAt = cursor
         let fastest = budget == .full ? interactiveFrameRate : min(60, interactiveFrameRate)
         // 24 only where it divides the display's rate evenly; elsewhere it would judder.
@@ -174,7 +238,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     func encode(into commandBuffer: MTLCommandBuffer, pass: MTLRenderPassDescriptor, scale: Float, time: Float) {
-        reserve(sprites: simulation.spriteCount + (rain?.spriteCount ?? 0), columns: simulation.columnCount)
+        reserve(sprites: simulation.spriteCount + (rain?.spriteCount ?? 0) + (extras?.spriteCount ?? 0), columns: simulation.columnCount)
         guard spriteBuffers.count == framesInFlight, heightBuffers.count == framesInFlight,
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
 
@@ -185,6 +249,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let spritePointer = spriteBuffer.contents().bindMemory(to: Sprite.self, capacity: spriteCapacity)
         var sprites = simulation.writeSprites(into: spritePointer, capacity: spriteCapacity)
         if let rain { sprites += rain.write(into: spritePointer + sprites, capacity: spriteCapacity - sprites) }
+        if let extras { sprites += extras.write(into: spritePointer + sprites, capacity: spriteCapacity - sprites) }
         let piles = simulation.writeLayers(
             into: heightBuffer.contents().bindMemory(to: Float.self, capacity: heightCapacity),
             capacity: heightCapacity
@@ -203,7 +268,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             hearth: hearth,
             hearthLight: SIMD4(70, 0.42 * hearthStrength, 280, 0)
         )
-        uniforms.autumn = simulation.autumn ? 1 : 0
+        uniforms.autumn = simulation.autumn ? (petals ? 2 : 1) : 0
+        uniforms.opacity = opacity
         let uniformsLength = MemoryLayout<Uniforms>.stride
 
         drawPiles(piles.filter { !$0.isDock }, with: encoder, uniforms: uniforms, heights: heightBuffer)
@@ -214,6 +280,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&uniforms, length: uniformsLength, index: 1)
             encoder.setFragmentBytes(&uniforms, length: uniformsLength, index: 1)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: sprites)
+        }
+        // Frost is on the glass, in front of everything else.
+        if let frostPipeline, let frostBuffer, frostState.reach > 0 {
+            var frost = FrostUniforms(
+                viewSize: SIMD2(simulation.width, simulation.height), time: time, cell: frostState.cell, reach: frostState.reach,
+                mist: Float(frostState.mist), columns: Int32(frostState.columns), rows: Int32(frostState.rows), light: SIMD4(ambient.light, 1)
+            )
+            encoder.setRenderPipelineState(frostPipeline)
+            encoder.setFragmentBuffer(frostBuffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&frost, length: MemoryLayout<FrostUniforms>.stride, index: 1)
+            encoder.setFragmentBytes(&frost, length: MemoryLayout<FrostUniforms>.stride, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 4)
         }
         encoder.endEncoding()
         encodeDock(piles.filter(\.isDock), into: commandBuffer, uniforms: uniforms, heights: heightBuffer)

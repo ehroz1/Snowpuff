@@ -4,7 +4,10 @@
 pub mod geometry;
 pub mod icicles;
 pub mod layer;
+pub mod extras;
+pub mod ffi;
 pub mod rain;
+pub mod sfx;
 pub mod simulation;
 pub mod sound;
 pub mod version;

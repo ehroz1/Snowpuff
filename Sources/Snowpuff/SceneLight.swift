@@ -13,6 +13,8 @@ final class SceneLight {
     private(set) var rim = SIMD4<Float>(repeating: 0)
     /// How brightly the cursor glows like a candle.
     private(set) var lantern: Float = 0
+    /// How much of full daylight there is: 0 at night, 1 by day.
+    private(set) var day: Float = 1
 
     private var wallpaper: (url: URL, modified: Date?)?
     private var wallpaperTint = SIMD4<Float>(repeating: 0)
@@ -28,6 +30,7 @@ final class SceneLight {
         updateWallpaper(screen: screen)
         let hour = Self.hour(at: Date())
         light = Self.daylight(at: hour)
+        day = Self.day(at: hour)
         shadowTint = wallpaperTint
         rim = .zero
         lantern = 0

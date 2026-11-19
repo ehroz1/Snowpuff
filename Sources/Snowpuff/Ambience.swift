@@ -1,4 +1,5 @@
 import AVFoundation
+import CSnowpuffCore
 
 /// A quiet bed of winter sound, made on the fly so the app ships no audio files: wind that rises and falls in
 /// slow gusts, and a fire crackling in the next room.
@@ -21,8 +22,24 @@ final class Ambience {
     }
     /// 0 to 1.
     var volume: Float = 0.5 {
-        didSet { synth.volume = volume }
+        didSet {
+            synth.volume = volume
+            updateEffects()
+        }
     }
+    /// Sound effects from the shared core: rain on the glass, hail, snow crunching, icicles, snowballs, fireworks.
+    var effects = true {
+        didSet { apply() }
+    }
+    /// How hard it rains and hails, for their beds of sound.
+    var rainLevel: Float = 0 {
+        didSet { if rainLevel != oldValue { apply() } }
+    }
+    var hailLevel: Float = 0 {
+        didSet { if hailLevel != oldValue { apply() } }
+    }
+    private let sfx = sp_sfx_new(48000)
+    private var sampleRate: Float = 48000
     /// Silenced during a call, whatever the mode.
     var muted = false {
         didSet { apply() }
@@ -37,21 +54,45 @@ final class Ambience {
     private var stopTimer: Timer?
     private let synth = Synth()
 
-    private var audible: Bool { mode != .off && !muted }
+    private var bedsOn: Bool { mode != .off || (effects && (rainLevel > 0 || hailLevel > 0)) }
+    private var audible: Bool { bedsOn && !muted }
+
+    /// Plays a one-off effect the extras asked for: kind 0 crunch, 1 chime, 2 splat, 3 boom.
+    func play(_ cue: SPCue) {
+        guard effects, !muted, let sfx else { return }
+        sp_sfx_play(sfx, cue.kind, cue.value)
+        start()
+        scheduleStop()
+    }
+
+    private func updateEffects() {
+        guard let sfx else { return }
+        let on = effects && !muted
+        sp_sfx_set(sfx, sampleRate, volume, on ? rainLevel : 0, on ? hailLevel : 0)
+    }
 
     private func apply() {
         synth.wind = audible && (mode == .wind || mode == .both)
         synth.fire = audible && (mode == .fireplace || mode == .both)
+        updateEffects()
         stopTimer?.invalidate()
         stopTimer = nil
         if audible {
             start()
         } else if engine != nil {
-            // Let the sound fade out before the engine stops, so it never ends on a click.
-            stopTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
-                guard let self, !audible else { return }
-                stop()
-            }
+            scheduleStop()
+        }
+    }
+
+    /// Lets the sound fade out before the engine stops, so it never ends on a click, and waits for effects to ring out.
+    private func scheduleStop() {
+        stopTimer?.invalidate()
+        stopTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] timer in
+            guard let self else { return timer.invalidate() }
+            if audible { return timer.invalidate() }
+            if let sfx, sp_sfx_audible(sfx) != 0 { return }
+            timer.invalidate()
+            stop()
         }
     }
 
@@ -62,13 +103,17 @@ final class Ambience {
         let sampleRate = output.sampleRate > 0 ? output.sampleRate : 48000
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else { return }
         synth.sampleRate = Float(sampleRate)
+        self.sampleRate = Float(sampleRate)
+        updateEffects()
         let synth = synth
+        let sfx = sfx
         let source = AVAudioSourceNode(format: format) { _, _, frameCount, bufferList in
             let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
             guard buffers.count >= 2,
                   let left = buffers[0].mData?.assumingMemoryBound(to: Float.self),
                   let right = buffers[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
             synth.render(left: left, right: right, frames: Int(frameCount))
+            if let sfx { sp_sfx_mix(sfx, left, right, Int(frameCount)) }
             return noErr
         }
         engine.attach(source)

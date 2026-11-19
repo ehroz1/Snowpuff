@@ -16,19 +16,22 @@ use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerforma
 use windows::Win32::System::Threading::SetEvent;
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, Error, PCWSTR, Result, w};
 
 use snowpuff_core::geometry::{Rect, V2};
 use snowpuff_core::icicles::Icicles;
+use snowpuff_core::extras::{Extras, Input};
 use snowpuff_core::rain::{self, Rain};
+use snowpuff_core::sfx::Cue;
 use snowpuff_core::simulation::{Pace, SnowSimulation, WindowId, WindowSurface};
 
 use crate::desktop::DesktopLayer;
 use crate::light::{Backdrop, Sky, Wallpapers};
 use crate::log;
 use crate::prefs::Settings;
-use crate::render::{Ambient, Gpu, Surface};
+use crate::render::{Frost, Look, Ambient, Gpu, Surface};
 use crate::tracker::{COVER_ONLY, Tracker, class_name, cloaked, process_name};
 
 const CLASS: PCWSTR = w!("SnowpuffOverlay");
@@ -228,6 +231,16 @@ pub struct Screen {
     behind_taskbar: bool,
     pub icicles: Icicles,
     pub rain: Rain,
+    pub extras: Extras,
+    /// How what falls looks.
+    pub look: Look,
+    /// Snow settles on a selection dragged across the desktop.
+    pub deep: bool,
+    /// Sounds asked for since the snow thread last collected them.
+    pub cues: Vec<Cue>,
+    was_pressed: bool,
+    selection_start: Option<V2>,
+    selection_shown: bool,
     /// Every frame at the display's full rate.
     pub max_performance: bool,
     /// The foreground window, to glow warm, as the window list last had it.
@@ -276,6 +289,13 @@ impl Screen {
                 icicles
             },
             max_performance: settings.max_performance,
+            extras: Extras::new(size.0 as f32, size.1 as f32),
+            look: Look { petals: false, opacity: settings.opacity as f32 / 100.0 },
+            deep: settings.deep_interaction,
+            cues: Vec::new(),
+            was_pressed: false,
+            selection_start: None,
+            selection_shown: false,
             rain: {
                 let mut rain = Rain::new(size.0 as f32, size.1 as f32);
                 rain.set_intensity(rain::intensity(settings.snowfall));
@@ -325,9 +345,26 @@ impl Screen {
             self.follow(tracker, clock, now);
         }
         let cursor = self.cursor();
+        let inside = cursor.x >= 0.0 && cursor.y >= 0.0 && cursor.x <= self.size.0 as f32 && cursor.y <= self.size.1 as f32;
+        let (button, magic) = unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0, GetAsyncKeyState(VK_MENU.0 as i32) < 0) };
+        self.select(windows, inside.then_some(cursor), button, magic, dt);
         let mut changed = self.simulation.step(dt, cursor);
         changed |= self.icicles.step(dt, &mut self.simulation);
-        let raining = self.rain.is_active();
+        // A click on an icicle knocks it down with a ring.
+        if inside && button && !self.was_pressed && let Some(pitch) = self.icicles.knock(cursor) {
+            self.cues.push(Cue::Chime(pitch));
+        }
+        self.was_pressed = button;
+        {
+            let simulation = &self.simulation;
+            self.extras.sample_ground(|x| simulation.ground_level(x));
+        }
+        self.extras.step(Input { dt, cursor: inside.then_some(cursor), button, magic, daylight: sky.day, top_inset: 0.0 });
+        self.cues.extend(self.extras.take_cues());
+        changed |= self.extras.is_active();
+        let frost_changed = self.extras.take_frost_changed();
+        changed |= frost_changed;
+        let raining = self.rain.is_active() || self.extras.needs_smooth();
         if raining {
             let simulation = &self.simulation;
             self.rain.step(dt, Some(cursor), |x| simulation.ground_level(x));
@@ -358,8 +395,42 @@ impl Screen {
             lantern: (cursor, 0.0),
             hearth: (self.hearth, self.hearth_strength),
         };
-        self.surface.draw(gpu, &self.simulation, &self.icicles, &self.rain, ambient, time)?;
+        let (values, columns, rows, cell) = self.extras.frost_grid();
+        let frost = Frost { values, columns, rows, cell, reach: self.extras.frost_reach(), mist: self.extras.frost_is_mist(), changed: frost_changed };
+        self.surface.draw(gpu, &self.simulation, &self.icicles, &self.rain, &self.extras, Some(frost), self.look, ambient, time)?;
         Ok(true)
+    }
+
+    /// A selection dragged across the desktop, as Explorer draws one, catches the snow while it is held.
+    fn select(&mut self, windows: Option<&Tracker>, cursor: Option<V2>, button: bool, magic: bool, interval: f32) {
+        const SELECTION: WindowId = 0x5E1E_C7ED;
+        let on_desktop = || unsafe {
+            let mut class = [0u16; 32];
+            let length = GetClassNameW(GetForegroundWindow(), &mut class) as usize;
+            let name = String::from_utf16_lossy(&class[..length]);
+            name == "Progman" || name == "WorkerW"
+        };
+        let rect = match (windows, cursor) {
+            (Some(_), Some(cursor)) if self.deep && button && !magic && on_desktop() => {
+                let start = *self.selection_start.get_or_insert(cursor);
+                let (x, y) = (start.x.min(cursor.x), start.y.min(cursor.y));
+                let (width, height) = ((cursor.x - start.x).abs(), (cursor.y - start.y).abs());
+                (width > 12.0 && height > 12.0).then_some(Rect { x, y, width, height })
+            }
+            _ => {
+                self.selection_start = None;
+                None
+            }
+        };
+        if rect.is_none() && !self.selection_shown {
+            return;
+        }
+        self.selection_shown = rect.is_some();
+        let mut surfaces = self.surfaces.clone();
+        if let Some(frame) = rect {
+            surfaces.push(WindowSurface { id: SELECTION, frame, blockers: Vec::new(), corner_radius: 1.0, corner_exponent: 2.0 });
+        }
+        self.simulation.update_windows(&surfaces, interval, &HashSet::new(), &HashSet::new(), false);
     }
 
     /// Eases the glow toward the foreground window, fading it in and out; returns whether it visibly changed.
@@ -410,7 +481,10 @@ impl Screen {
             .collect();
         self.simulation.update_windows(&surfaces, interval, &HashSet::new(), &elsewhere, false);
         self.icicles.update(&tracker.eaves(&self.monitor.rect, self.size), interval, &elsewhere, false);
-        self.rain.update_windows(&tracker.rain_windows(&self.monitor.rect, self.size), interval);
+        let rain_windows = tracker.rain_windows(&self.monitor.rect, self.size);
+        self.rain.update_windows(&rain_windows, interval);
+        self.extras.set_windows(&rain_windows);
+        self.extras.set_covers(&self.simulation.covers);
         self.surfaces = surfaces;
         self.windows_changed_at = now;
     }

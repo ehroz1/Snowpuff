@@ -141,6 +141,23 @@ final class Icicles {
         dirty = true
     }
 
+    /// A click on an icicle knocks it off. Returns how high it rings, 1 for the shortest, or nil where none hangs.
+    func knock(at point: SIMD2<Float>) -> Float? {
+        for (id, eave) in eaves {
+            let edge = Float(eave.frame.minY)
+            guard point.y <= edge + 2, point.y >= edge - 60 else { continue }
+            for (i, icicle) in eave.hanging.enumerated() where icicle.length > 3 {
+                let x = Float(eave.frame.minX) + icicle.x
+                guard abs(point.x - x) <= max(icicle.width, 4) + 3, point.y >= edge - icicle.length - 3 else { continue }
+                drop(icicle, at: eave.frame, velocity: .zero)
+                eaves[id]?.hanging[i].length = 0
+                dirty = true
+                return 1 - min(icicle.length / 40, 1)
+            }
+        }
+        return nil
+    }
+
     /// Lets every icicle melt away at once, as when all the snow is cleared.
     func melt() {
         eaves.removeAll()

@@ -43,6 +43,22 @@ enum Preferences {
     private static let overFullScreenKey = "overFullScreen"
     private static let rainKey = "rain"
     private static let maxPerformanceKey = "maxPerformance"
+    private static let weatherKey = "weather"
+    private static let mixRainKey = "mixRain"
+    private static let snowOnDockKey = "snowOnDock"
+    private static let deepInteractionKey = "deepInteraction"
+    private static let blizzardKey = "blizzard"
+    private static let fogKey = "fog"
+    private static let starsKey = "stars"
+    private static let garlandKey = "garland"
+    private static let frostKey = "frost"
+    private static let creaturesKey = "creatures"
+    private static let wordsKey = "words"
+    private static let soundEffectsKey = "soundEffects"
+    private static let opacityKey = "opacity"
+    private static let batterySaverKey = "batterySaver"
+    private static let liveWeatherKey = "liveWeather"
+    private static let lastSeenVersionKey = "lastSeenVersion"
     private static let autumnKey = "autumn"
 
     static func registerDefaults() {
@@ -64,6 +80,20 @@ enum Preferences {
             overFullScreenKey: false,
             rainKey: false,
             maxPerformanceKey: false,
+            mixRainKey: false,
+            snowOnDockKey: true,
+            deepInteractionKey: false,
+            blizzardKey: true,
+            fogKey: false,
+            starsKey: true,
+            garlandKey: false,
+            frostKey: true,
+            creaturesKey: true,
+            wordsKey: false,
+            soundEffectsKey: true,
+            opacityKey: 1.0,
+            batterySaverKey: false,
+            liveWeatherKey: false,
             autumnKey: false,
         ])
     }
@@ -137,6 +167,87 @@ enum Preferences {
     static var maxPerformance: Bool {
         get { defaults.bool(forKey: maxPerformanceKey) }
         set { defaults.set(newValue, forKey: maxPerformanceKey) }
+    }
+
+    static var weather: Weather {
+        get { Weather(rawValue: defaults.integer(forKey: weatherKey)) ?? .snow }
+        set { defaults.set(newValue.rawValue, forKey: weatherKey) }
+    }
+
+    static var opacity: Float {
+        get { defaults.float(forKey: opacityKey) }
+        set { defaults.set(newValue, forKey: opacityKey) }
+    }
+
+    /// The version whose news was last shown, to show "What's New" once after an update.
+    static var lastSeenVersion: String? {
+        get { defaults.string(forKey: lastSeenVersionKey) }
+        set { defaults.set(newValue, forKey: lastSeenVersionKey) }
+    }
+
+    static var mixRain: Bool {
+        get { defaults.bool(forKey: mixRainKey) }
+        set { defaults.set(newValue, forKey: mixRainKey) }
+    }
+
+    static var snowOnDock: Bool {
+        get { defaults.bool(forKey: snowOnDockKey) }
+        set { defaults.set(newValue, forKey: snowOnDockKey) }
+    }
+
+    static var deepInteraction: Bool {
+        get { defaults.bool(forKey: deepInteractionKey) }
+        set { defaults.set(newValue, forKey: deepInteractionKey) }
+    }
+
+    static var blizzard: Bool {
+        get { defaults.bool(forKey: blizzardKey) }
+        set { defaults.set(newValue, forKey: blizzardKey) }
+    }
+
+    static var fog: Bool {
+        get { defaults.bool(forKey: fogKey) }
+        set { defaults.set(newValue, forKey: fogKey) }
+    }
+
+    static var stars: Bool {
+        get { defaults.bool(forKey: starsKey) }
+        set { defaults.set(newValue, forKey: starsKey) }
+    }
+
+    static var garland: Bool {
+        get { defaults.bool(forKey: garlandKey) }
+        set { defaults.set(newValue, forKey: garlandKey) }
+    }
+
+    static var frost: Bool {
+        get { defaults.bool(forKey: frostKey) }
+        set { defaults.set(newValue, forKey: frostKey) }
+    }
+
+    static var creatures: Bool {
+        get { defaults.bool(forKey: creaturesKey) }
+        set { defaults.set(newValue, forKey: creaturesKey) }
+    }
+
+    static var words: Bool {
+        get { defaults.bool(forKey: wordsKey) }
+        set { defaults.set(newValue, forKey: wordsKey) }
+    }
+
+    static var soundEffects: Bool {
+        get { defaults.bool(forKey: soundEffectsKey) }
+        set { defaults.set(newValue, forKey: soundEffectsKey) }
+    }
+
+    static var batterySaver: Bool {
+        get { defaults.bool(forKey: batterySaverKey) }
+        set { defaults.set(newValue, forKey: batterySaverKey) }
+    }
+
+    static var liveWeather: Bool {
+        get { defaults.bool(forKey: liveWeatherKey) }
+        set { defaults.set(newValue, forKey: liveWeatherKey) }
     }
 
     /// Rain falls instead of snow or leaves.
