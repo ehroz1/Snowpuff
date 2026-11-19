@@ -217,7 +217,7 @@ pub struct Screen {
     pub next_due: i64,
     surface: Surface,
     overlay: Overlay,
-    size: (u32, u32),
+    pub size: (u32, u32),
     last_step: i64,
     idle_frames: u32,
     interactive_rate: u32,
@@ -585,6 +585,12 @@ impl Screen {
     }
 
     /// The pointer in overlay coordinates.
+    /// The cursor in this display's overlay, if it is on this display.
+    pub fn cursor_here(&self) -> Option<V2> {
+        let cursor = self.cursor();
+        (cursor.x >= 0.0 && cursor.y >= 0.0 && cursor.x <= self.size.0 as f32 && cursor.y <= self.size.1 as f32).then_some(cursor)
+    }
+
     fn cursor(&self) -> V2 {
         let mut point = POINT::default();
         if unsafe { GetCursorPos(&mut point) }.is_err() {

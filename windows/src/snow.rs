@@ -74,6 +74,10 @@ pub enum Command {
     Fireworks(f32),
     /// Big soft flakes for a few seconds, as when "snow" is typed.
     Flurry,
+    /// A snowman where the cursor is, along the bottom of its display.
+    Snowman,
+    /// A snowball thrown at the cursor.
+    Snowball,
     Quit,
 }
 
@@ -272,6 +276,23 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 }
                 Command::Fireworks(seconds) => screens.iter_mut().for_each(|screen| screen.extras.fireworks(seconds)),
                 Command::Flurry => screens.iter_mut().for_each(|screen| screen.extras.flurry()),
+                Command::Snowman => {
+                    // On the display under the cursor, or the first one when the cursor is elsewhere.
+                    let at = screens.iter().position(|screen| screen.cursor_here().is_some()).unwrap_or(0);
+                    if let Some(screen) = screens.get_mut(at) {
+                        let x = screen.cursor_here().map_or(screen.size.0 as f32 * 0.5, |c| c.x);
+                        screen.extras.build_snowman(x);
+                        screen.resume();
+                    }
+                }
+                Command::Snowball => {
+                    for screen in &mut screens {
+                        if let Some(cursor) = screen.cursor_here() {
+                            screen.extras.throw_at(cursor);
+                            screen.resume();
+                        }
+                    }
+                }
                 Command::MaxPerformance(on) => {
                     settings.max_performance = on;
                     screens.iter_mut().for_each(|screen| screen.max_performance = on);

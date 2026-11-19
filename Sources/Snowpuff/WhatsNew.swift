@@ -4,6 +4,15 @@ import AppKit
 final class WhatsNewController: NSObject, NSWindowDelegate {
     /// The news of each version, newest first.
     static let notes: [(version: String, english: [String], russian: [String])] = [
+        ("1.3.2", [
+            "Shortcuts anywhere: ⌃⌥N builds a snowman at the cursor, ⌃⌥B throws a snowball, ⌃⌥S turns the snow on and off, ⌃⌥M changes the mode. ⌃⌥H shows them all.",
+            "Snowmen are easier: hold ⌥ with the cursor low on the screen for a second, drift or no drift.",
+            "How to Use, in the menu.",
+        ], [
+            "Горячие клавиши где угодно: ⌃⌥N — снеговик у курсора, ⌃⌥B — снежок, ⌃⌥S — снег вкл/выкл, ⌃⌥M — сменить режим. ⌃⌥H покажет все.",
+            "Снеговика слепить проще: зажми ⌥ и подержи курсор внизу экрана секунду — даже без сугроба.",
+            "В меню появилось «Как пользоваться».",
+        ]),
         ("1.3.1", [
             "Cherry Blossom and Hail join Snow, Autumn Leaves and Rain under Mode. Add Rain mixes rain into any of them.",
             "Real weather: Weather Outside makes it snow, rain or hail as it does where you are.",
@@ -33,18 +42,45 @@ final class WhatsNewController: NSObject, NSWindowDelegate {
         ]),
     ]
 
+    /// How to use it: the mouse with Option, and the shortcuts.
+    static let help: (english: [String], russian: [String]) = ([
+        "Hold ⌥ and move the cursor near an edge: draw on the frost or misted glass.",
+        "Hold ⌥ with the cursor low on the screen, by the drift, for a second: a snowman.",
+        "⌥-click: throw a snowball. Click an icicle: it falls with a ring.",
+        "Flick the mouse fast: a swirl of snow follows it.",
+        "On a trackpad the same: hold ⌥ and tap, or move a finger.",
+        "⌃⌥S — snow on / off   ·   ⌃⌥M — the next mode",
+        "⌃⌥N — a snowman at the cursor   ·   ⌃⌥B — a snowball at the cursor",
+        "⌃⌥C — clear the snow   ·   ⌃⌥F — frost   ·   ⌃⌥G — garland",
+        "⌃⌥H — this window. The shortcuts can be turned off in Settings → Magic.",
+    ], [
+        "Зажми ⌥ и веди курсором у края экрана — рисуешь по инею или запотевшему стеклу.",
+        "Зажми ⌥ и подержи курсор внизу экрана, у сугроба, секунду — слепится снеговик.",
+        "⌥ + клик — бросить снежок. Клик по сосульке — она падает со звоном.",
+        "Быстро махни мышью — за курсором закружится метель.",
+        "На трекпаде так же: зажми ⌥ и коснись или веди пальцем.",
+        "⌃⌥S — снег вкл / выкл   ·   ⌃⌥M — следующий режим",
+        "⌃⌥N — снеговик у курсора   ·   ⌃⌥B — снежок в курсор",
+        "⌃⌥C — смести снег   ·   ⌃⌥F — иней   ·   ⌃⌥G — гирлянда",
+        "⌃⌥H — это окно. Клавиши можно выключить: Настройки → Волшебство.",
+    ])
+
     private var window: NSWindow?
 
+    /// What's New.
     func show() {
-        if let window {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let width: CGFloat = 470
-        let version = Updater.version
-        let entry = Self.notes.first { $0.version == version } ?? Self.notes[0]
-        let items = speaksRussian ? entry.russian : entry.english
+        let entry = Self.notes.first { $0.version == Updater.version } ?? Self.notes[0]
+        present(title: tr("What's New in Snowpuff \(Updater.version)", "Что нового в Snowpuff \(Updater.version)"), items: speaksRussian ? entry.russian : entry.english)
+    }
+
+    /// How to Use.
+    func showHelp() {
+        present(title: tr("How to Use Snowpuff", "Как пользоваться Snowpuff"), items: speaksRussian ? Self.help.russian : Self.help.english)
+    }
+
+    private func present(title heading: String, items: [String]) {
+        window?.close()
+        let width: CGFloat = 500
 
         let cocoa = NSColor(srgbRed: 0.17, green: 0.12, blue: 0.1, alpha: 1)
         let cream = NSColor(srgbRed: 0.98, green: 0.93, blue: 0.85, alpha: 1)
@@ -83,7 +119,7 @@ final class WhatsNewController: NSObject, NSWindowDelegate {
 
         let icon = NSImageView(frame: NSRect(x: (width - 64) / 2, y: height - 84, width: 64, height: 64))
         icon.image = NSApp.applicationIconImage
-        let title = NSTextField(labelWithString: tr("What's New in Snowpuff \(version)", "Что нового в Snowpuff \(version)"))
+        let title = NSTextField(labelWithString: heading)
         title.font = NSFont.systemFont(ofSize: 19, weight: .semibold)
         title.textColor = cream
         title.alignment = .center

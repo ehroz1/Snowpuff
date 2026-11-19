@@ -59,6 +59,7 @@ enum Preferences {
     private static let batterySaverKey = "batterySaver"
     private static let liveWeatherKey = "liveWeather"
     private static let lastSeenVersionKey = "lastSeenVersion"
+    private static let hotkeysKey = "hotkeys"
     private static let autumnKey = "autumn"
 
     static func registerDefaults() {
@@ -77,6 +78,7 @@ enum Preferences {
             ambienceKey: 0,
             ambienceVolumeKey: 0.5,
             autoUpdateKey: true,
+            hotkeysKey: true,
             overFullScreenKey: false,
             rainKey: false,
             maxPerformanceKey: false,
@@ -177,6 +179,12 @@ enum Preferences {
     static var opacity: Float {
         get { defaults.float(forKey: opacityKey) }
         set { defaults.set(newValue, forKey: opacityKey) }
+    }
+
+    /// Control-Option-letter shortcuts work anywhere.
+    static var hotkeys: Bool {
+        get { defaults.bool(forKey: hotkeysKey) }
+        set { defaults.set(newValue, forKey: hotkeysKey) }
     }
 
     /// The version whose news was last shown, to show "What's New" once after an update.

@@ -44,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A call or recording is on: the snow and its sounds step aside.
     private var hushed = false
     private var timers: [Timer] = []
+    private lazy var hotKeys = HotKeys { [weak self] action in self?.hotKey(action) }
+    /// The snowfall before ⌃⌥S turned it off, to bring it back.
+    private var snowfallBefore: Snowfall?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if AppMover.moveIfNeeded() {
@@ -73,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Preferences.liveWeather { liveWeather.start() }
         snowWord.typed = { [weak self] in self?.screens.forEach { $0.extras.flurry() } }
         if Preferences.words { snowWord.start() }
+        if Preferences.hotkeys { hotKeys.start() }
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.watchTheClock() })
         // A click on an icicle is looked for a few dozen times a second: cheap, and no event tap needed.
         timers.append(Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.knockIcicles() })
@@ -337,6 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settings = add(tr("Settings…", "Настройки…"), #selector(openSettings), to: menu)
         settings.keyEquivalent = ","
         updatesItem = add(tr("Check for Updates…", "Проверить обновления…"), #selector(checkForUpdatesFromMenu), to: menu)
+        add(tr("How to Use…", "Как пользоваться…"), #selector(showHelp), to: menu)
         add(tr("What's New", "Что нового"), #selector(showWhatsNew), to: menu)
         add(tr("Report a Problem…", "Сообщить о проблеме…"), #selector(reportProblemFromMenu), to: menu)
         menu.addItem(.separator())
@@ -562,6 +567,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         whatsNew.show()
     }
 
+    @objc private func showHelp() {
+        whatsNew.showHelp()
+    }
+
+    /// A Control-Option shortcut, pressed anywhere.
+    private func hotKey(_ action: HotKeys.Action) {
+        let mouse = NSEvent.mouseLocation
+        let here = screens.first { $0.local(mouse) != nil }
+        switch action {
+        case .snow:
+            if snowfall == .off {
+                select(snowfallBefore ?? .steady)
+            } else {
+                snowfallBefore = snowfall
+                select(.off)
+            }
+        case .mode:
+            if let next = Weather(rawValue: (Preferences.weather.rawValue + 1) % Weather.allCases.count) { applyMode(next) }
+        case .snowman:
+            // Under the cursor, or in the middle of the first display.
+            if let here, let point = here.local(mouse) {
+                here.extras.buildSnowman(at: point.x)
+            } else if let first = screens.first {
+                first.extras.buildSnowman(at: Float(first.window.frame.width / 2))
+            }
+            if weather != .snow { tell(tr("Snowmen are made of snow: choose Mode › Snow first.", "Снеговик лепится из снега: сначала выбери «Режим → Снег».")) }
+        case .snowball:
+            if let here, let point = here.local(mouse) { here.extras.throwSnowball(at: point) }
+        case .clear:
+            clearAll()
+        case .frost:
+            Preferences.frost.toggle()
+            setExtras()
+        case .garland:
+            Preferences.garland.toggle()
+            setExtras()
+        case .help:
+            whatsNew.showHelp()
+        }
+        settingsModel.reload()
+    }
+
     @objc private func reportProblemFromMenu() {
         reportProblem()
     }
@@ -727,6 +774,12 @@ extension AppDelegate: SnowControls {
     }
 
     func openWhatsNew() { whatsNew.show() }
+    func openHelp() { whatsNew.showHelp() }
+
+    func setHotkeys(_ on: Bool) {
+        Preferences.hotkeys = on
+        if on { hotKeys.start() } else { hotKeys.stop() }
+    }
 
     /// Opens a new issue on GitHub with the version and the system filled in; nothing is sent until it is submitted.
     func reportProblem() {

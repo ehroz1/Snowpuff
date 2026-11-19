@@ -134,9 +134,19 @@ private struct SettingsView: View {
                         hint: tr("Only the keys of \"snow\" and \"снег\" are watched; nothing typed is kept.", "Отслеживаются только клавиши слов «snow» и «снег»; набранное не сохраняется.")
                     )
                 }
+                Toggle(isOn: $model.hotkeys) {
+                    SettingLabel(
+                        title: tr("Shortcuts ⌃⌥ + letter", "Горячие клавиши ⌃⌥ + буква"),
+                        hint: tr("S snow · M mode · N snowman · B snowball · C clear · F frost · G garland · H help", "S снег · M режим · N снеговик · B снежок · C смести · F иней · G гирлянда · H подсказка")
+                    )
+                }
+                HStack {
+                    Spacer()
+                    Button(tr("How to Use…", "Как пользоваться…")) { model.controls?.openHelp() }
+                }
                 SettingLabel(
                     title: tr("Snowmen and snowballs", "Снеговики и снежки"),
-                    hint: tr("Hold ⌥ with the cursor on a drift to build a snowman; ⌥-click throws a snowball.", "Зажми ⌥ на сугробе — слепится снеговик; ⌥ + клик бросает снежок.")
+                    hint: tr("Hold ⌥ with the cursor low on the screen for a second, or press ⌃⌥N; ⌥-click or ⌃⌥B throws a snowball.", "Зажми ⌥ и подержи курсор внизу экрана секунду или нажми ⌃⌥N; ⌥ + клик или ⌃⌥B бросает снежок.")
                 )
             }
         }

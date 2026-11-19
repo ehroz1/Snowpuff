@@ -15,7 +15,7 @@ enum SettingsFile {
         "icicles", "warmGlow", "puff", "quietOnCalls", "ambience", "ambienceVolume", "autoUpdate", "overFullScreen",
         "rain", "maxPerformance", "autumn", "addedToLoginItems",
         "weather", "mixRain", "snowOnDock", "deepInteraction", "blizzard", "fog", "stars", "garland", "frost", "creatures",
-        "words", "soundEffects", "opacity", "batterySaver", "liveWeather", "lastSeenVersion",
+        "words", "soundEffects", "opacity", "batterySaver", "liveWeather", "lastSeenVersion", "hotkeys",
     ]
     private static var pending: DispatchWorkItem?
     private static var observer: NSObjectProtocol?

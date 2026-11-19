@@ -901,23 +901,50 @@ impl Extras {
         }
     }
 
+    /// Builds a snowman at once where the drift is at `x`, as the hotkey does. A crowded spot moves it aside; with four
+    /// standing, the oldest melts to make room.
+    pub fn build_snowman(&mut self, x: f32) {
+        if self.settings.weather != Weather::Snow {
+            return;
+        }
+        let x = x.clamp(30.0, (self.width - 30.0).max(31.0));
+        let x = match self.snowmen.iter().find(|s| !s.melting && (s.x - x).abs() < 70.0) {
+            Some(near) => {
+                let step = if near.x < self.width * 0.5 { 75.0 } else { -75.0 };
+                (near.x + step).clamp(30.0, (self.width - 30.0).max(31.0))
+            }
+            None => x,
+        };
+        if self.snowmen.iter().filter(|s| !s.melting).count() >= 4
+            && let Some(oldest) = self.snowmen.iter_mut().find(|s| !s.melting)
+        {
+            oldest.melting = true;
+        }
+        let seed = self.next();
+        self.snowmen.push(Snowman { x, built: 0.0, seed, melting: false, look: 0.0 });
+        self.cues.push(Cue::Crunch(1.0));
+    }
+
+    /// Throws a snowball at a point, as the hotkey does.
+    pub fn throw_at(&mut self, target: V2) {
+        self.throw(target);
+    }
+
     fn step_snowmen(&mut self, dt: f32, cursor: Option<V2>, building: bool, velocity: V2) {
-        // Holding the modifier with the cursor still on a deep enough drift packs a snowman there.
+        // Holding the modifier with the cursor still near the bottom of the screen, where the drift is, packs a
+        // snowman there in a second. Snow is brought along when the drift is thin.
         let allowed = self.settings.weather == Weather::Snow;
         match cursor {
-            Some(cursor) if allowed && building && velocity.length() < 120.0 => {
-                let depth = self.ground_at(cursor.x);
-                let on_drift = depth >= 14.0 && cursor.y <= depth + 12.0 && cursor.y >= -5.0;
-                let near = self.snowmen.iter().any(|s| (s.x - cursor.x).abs() < 70.0);
-                if on_drift && !near && self.snowmen.len() < 4 {
+            Some(cursor) if allowed && building && velocity.length() < 160.0 => {
+                let depth = self.ground_at(cursor.x).max(0.0);
+                let low = cursor.y <= depth + 70.0 && cursor.y >= -5.0;
+                if low {
                     let progress = match self.building {
-                        Some((x, progress)) if (x - cursor.x).abs() < 30.0 => progress + dt / 1.3,
+                        Some((x, progress)) if (x - cursor.x).abs() < 40.0 => progress + dt,
                         _ => 0.0,
                     };
                     if progress >= 1.0 {
-                        let seed = self.next();
-                        self.snowmen.push(Snowman { x: cursor.x, built: 0.0, seed, melting: false, look: 0.0 });
-                        self.cues.push(Cue::Crunch(1.0));
+                        self.build_snowman(cursor.x);
                         self.building = None;
                     } else {
                         self.building = Some((cursor.x, progress));
@@ -928,9 +955,10 @@ impl Extras {
             }
             _ => self.building = None,
         }
-        let ground: Vec<f32> = self.snowmen.iter().map(|s| self.ground_at(s.x)).collect();
-        for (snowman, depth) in self.snowmen.iter_mut().zip(ground) {
-            if depth < 6.0 {
+        // Snowmen stand until the snow is cleared or something else than snow falls.
+        let melting = !allowed;
+        for snowman in &mut self.snowmen {
+            if melting {
                 snowman.melting = true;
             }
             if snowman.melting {
@@ -1302,7 +1330,7 @@ impl Extras {
             put(Sprite { position: stone.position, velocity: stone.velocity, size: stone.size, alpha: 0.95 * fade, leaf: [HAIL, 0.0, 0.0], ..Default::default() });
         }
         for snowman in &self.snowmen {
-            let ground = self.ground_at(snowman.x);
+            let ground = self.ground_at(snowman.x).max(0.0);
             let height = 78.0;
             let center = V2::new(snowman.x, ground - 4.0 + height * 0.5);
             put(Sprite {
@@ -1315,7 +1343,7 @@ impl Extras {
             });
         }
         if let Some((x, progress)) = self.building {
-            let ground = self.ground_at(x);
+            let ground = self.ground_at(x).max(0.0);
             let height = 78.0;
             put(Sprite {
                 position: V2::new(x, ground - 4.0 + height * 0.5),
@@ -1496,15 +1524,36 @@ mod tests {
     }
 
     #[test]
-    fn a_held_modifier_builds_a_snowman_on_a_drift() {
+    fn a_held_modifier_builds_a_snowman_near_the_bottom() {
         let mut extras = Extras::new(1200.0, 800.0);
         extras.sample_ground(|_| 30.0);
-        frame(&mut extras, Input { cursor: Some(V2::new(400.0, 20.0)), magic: true, daylight: 1.0, ..Default::default() }, 2.5);
+        frame(&mut extras, Input { cursor: Some(V2::new(400.0, 20.0)), magic: true, daylight: 1.0, ..Default::default() }, 1.2);
         assert_eq!(extras.snowmen.len(), 1);
-        // The drift melting away takes the snowman with it.
-        extras.sample_ground(|_| 0.0);
+        // Without any drift, near the bottom, it still works: the snow comes along.
+        let mut bare = Extras::new(1200.0, 800.0);
+        frame(&mut bare, Input { cursor: Some(V2::new(600.0, 40.0)), magic: true, daylight: 1.0, ..Default::default() }, 1.2);
+        assert_eq!(bare.snowmen.len(), 1);
+        // Higher up the screen nothing is built.
+        let mut high = Extras::new(1200.0, 800.0);
+        frame(&mut high, Input { cursor: Some(V2::new(600.0, 400.0)), magic: true, daylight: 1.0, ..Default::default() }, 2.0);
+        assert!(high.snowmen.is_empty());
+        // Rain melts them.
+        extras.settings.weather = Weather::Rain;
         frame(&mut extras, Input { daylight: 1.0, ..Default::default() }, 4.0);
         assert!(extras.snowmen.is_empty());
+    }
+
+    #[test]
+    fn the_hotkey_builds_snowmen_side_by_side_and_keeps_four() {
+        let mut extras = Extras::new(1200.0, 800.0);
+        for _ in 0..6 {
+            extras.build_snowman(600.0);
+            frame(&mut extras, Input { daylight: 1.0, ..Default::default() }, 0.2);
+        }
+        let standing: Vec<f32> = extras.snowmen.iter().filter(|s| !s.melting).map(|s| s.x).collect();
+        assert_eq!(standing.len(), 4, "{standing:?}");
+        frame(&mut extras, Input { daylight: 1.0, ..Default::default() }, 3.0);
+        assert_eq!(extras.snowmen.len(), 4);
     }
 
     #[test]

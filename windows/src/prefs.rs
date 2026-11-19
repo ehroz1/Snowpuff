@@ -65,6 +65,8 @@ pub struct Settings {
     pub live_weather: bool,
     /// How much of what falls shows, in percent.
     pub opacity: u32,
+    /// Ctrl+Alt+letter shortcuts work anywhere.
+    pub hotkeys: bool,
     /// The version whose news was last shown, as 10300 for 1.3.0.
     pub seen_version: u32,
 
@@ -106,6 +108,7 @@ impl Settings {
             hail: read("hail").is_some_and(|v| v != 0),
             mix_rain: read("mixRain").is_some_and(|v| v != 0),
             deep_interaction: read("deepInteraction").is_some_and(|v| v != 0),
+            hotkeys: read("hotkeys").is_none_or(|v| v != 0),
             blizzard: read("blizzard").is_none_or(|v| v != 0),
             fog: read("fog").is_some_and(|v| v != 0),
             stars: read("stars").is_none_or(|v| v != 0),
@@ -149,6 +152,7 @@ impl Settings {
             ("hail", self.hail as u32),
             ("mixRain", self.mix_rain as u32),
             ("deepInteraction", self.deep_interaction as u32),
+            ("hotkeys", self.hotkeys as u32),
             ("blizzard", self.blizzard as u32),
             ("fog", self.fog as u32),
             ("stars", self.stars as u32),

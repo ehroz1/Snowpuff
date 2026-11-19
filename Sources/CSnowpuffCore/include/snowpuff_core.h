@@ -59,6 +59,8 @@ void sp_extras_step(SPExtras *extras, SPInput input);
 void sp_extras_flurry(SPExtras *extras);
 void sp_extras_fireworks(SPExtras *extras, float seconds);
 void sp_extras_clear(SPExtras *extras);
+void sp_extras_build_snowman(SPExtras *extras, float x);
+void sp_extras_throw(SPExtras *extras, float x, float y);
 uint8_t sp_extras_active(const SPExtras *extras);
 uint8_t sp_extras_smooth(const SPExtras *extras);
 size_t sp_extras_sprite_count(const SPExtras *extras);

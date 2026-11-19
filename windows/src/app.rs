@@ -108,6 +108,8 @@ struct App {
     typed: Vec<(u8, u32)>,
     /// The year whose New Year fireworks have gone off.
     fireworks_year: u16,
+    /// The snowfall before Ctrl+Alt+S turned it off, to bring it back.
+    snowfall_before: Option<Snowfall>,
 }
 
 impl App {
@@ -184,6 +186,9 @@ pub fn run() -> Result<()> {
             SetTimer(Some(window), TIMER_CALLS, 2000, None);
         }
         SetTimer(Some(window), TIMER_CLOCK, 1000, None);
+        if settings.hotkeys {
+            register_hotkeys(window);
+        }
         if settings.words {
             SetTimer(Some(window), TIMER_WORDS, 33, None);
         }
@@ -224,6 +229,7 @@ pub fn run() -> Result<()> {
             keys_down: 0,
             typed: Vec::new(),
             fireworks_year: 0,
+            snowfall_before: None,
         };
         refresh_sound(&mut app);
         if app.settings.puff {
@@ -299,6 +305,10 @@ unsafe fn handle(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> 
         WM_UPDATE => {
             let result = unsafe { Box::from_raw(lparam.0 as *mut Updated) };
             updated(window, *result, wparam.0 != 0);
+            LRESULT(0)
+        }
+        WM_HOTKEY => {
+            hotkey(window, wparam.0 as i32);
             LRESULT(0)
         }
         WM_WHATS_NEW => {
@@ -606,6 +616,80 @@ const ID_MIX_RAIN: u32 = 235;
 const ID_LIVE: u32 = 236;
 const ID_WHATS_NEW: u32 = 238;
 const ID_REPORT: u32 = 239;
+const ID_HELP: u32 = 240;
+const ID_HOTKEYS: u32 = 241;
+
+/// Ctrl+Alt and a letter, anywhere: the letters, and what each does.
+const HOTKEYS: [(u32, u16); 8] = [
+    (1, b'S' as u16), // snow on and off
+    (2, b'M' as u16), // the next mode
+    (3, b'N' as u16), // a snowman at the cursor
+    (4, b'B' as u16), // a snowball at the cursor
+    (5, b'C' as u16), // clear the snow
+    (6, b'F' as u16), // frost on and off
+    (7, b'G' as u16), // the garland on and off
+    (8, b'H' as u16), // How to Use
+];
+
+fn register_hotkeys(window: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey};
+    for (id, key) in HOTKEYS {
+        // Another app may hold the same keys; Snowpuff's others still work.
+        if let Err(error) = unsafe { RegisterHotKey(Some(window), id as i32, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, key as u32) } {
+            log!("hotkey Ctrl+Alt+{} taken: {error}", key as u8 as char);
+        }
+    }
+}
+
+fn unregister_hotkeys(window: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+    for (id, _) in HOTKEYS {
+        unsafe {
+            let _ = UnregisterHotKey(Some(window), id as i32);
+        }
+    }
+}
+
+fn hotkey(window: HWND, id: i32) {
+    let login = prefs::opens_at_login();
+    match id {
+        1 => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            let next = if app.settings.snowfall == Snowfall::Off {
+                app.snowfall_before.take().unwrap_or(Snowfall::Steady)
+            } else {
+                app.snowfall_before = Some(app.settings.snowfall);
+                Snowfall::Off
+            };
+            app.settings.snowfall = next;
+            app.settings.save();
+            send(app, Command::Snowfall(next));
+            refresh_sound(app);
+            refresh_icon(window, app);
+        }),
+        2 => {
+            let next = APP.with_borrow(|app| app.as_ref().map(|app| (weather_index(snow::weather(&app.settings)) + 1) % 5));
+            if let Some(next) = next {
+                choose(window, ID_WEATHER + next, login);
+            }
+        }
+        3 => APP.with_borrow(|app| {
+            if let Some(app) = app {
+                send(app, Command::Snowman);
+            }
+        }),
+        4 => APP.with_borrow(|app| {
+            if let Some(app) = app {
+                send(app, Command::Snowball);
+            }
+        }),
+        5 => choose(window, ID_CLEAR, login),
+        6 => choose(window, ID_SWITCH + 3, login),
+        7 => choose(window, ID_SWITCH + 6, login),
+        8 => whats_new::show_help(),
+        _ => {}
+    }
+}
 const ID_OPACITY: u32 = 260;
 const OPACITIES: [u32; 4] = [25, 50, 75, 100];
 
@@ -723,6 +807,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         append(options, MF_POPUP, sound.0 as u32, tr("Sound", "Звук"));
         append(options, MF_STRING | checked(login), ID_LOGIN, tr("Open at Login", "Открывать при входе"));
         append(options, MF_STRING | checked(settings.auto_update), ID_AUTO_UPDATE, tr("Update Automatically", "Обновлять автоматически"));
+        append(options, MF_STRING | checked(settings.hotkeys), ID_HOTKEYS, tr("Hotkeys Ctrl+Alt+Letter", "Горячие клавиши Ctrl+Alt+буква"));
 
         append(menu, MF_POPUP, snowfall.0 as u32, tr("Intensity", "Интенсивность"));
         append(menu, MF_POPUP, modes.0 as u32, tr("Mode", "Режим"));
@@ -738,6 +823,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
             (None, _) => tr("Check for Updates…", "Проверить обновления…").to_string(),
         };
         append(menu, MF_STRING | enabled(!updating), ID_UPDATES, &updates);
+        append(menu, MF_STRING, ID_HELP, tr("How to Use…", "Как пользоваться…"));
         append(menu, MF_STRING, ID_WHATS_NEW, tr("What's New", "Что нового"));
         append(menu, MF_STRING, ID_REPORT, tr("Report a Problem…", "Сообщить о проблеме…"));
         let about = if russian() { format!("Snowpuff {} на GitHub", update::VERSION) } else { format!("Snowpuff {} on GitHub", update::VERSION) };
@@ -780,6 +866,17 @@ fn choose(window: HWND, chosen: u32, login: bool) {
         0 => {}
         ID_QUIT => quit(window),
         ID_WHATS_NEW => whats_new::show(),
+        ID_HELP => whats_new::show_help(),
+        ID_HOTKEYS => APP.with_borrow_mut(|app| {
+            let Some(app) = app else { return };
+            app.settings.hotkeys = !app.settings.hotkeys;
+            app.settings.save();
+            if app.settings.hotkeys {
+                register_hotkeys(window);
+            } else {
+                unregister_hotkeys(window);
+            }
+        }),
         ID_REPORT => update::open(&update::report_link()),
         ID_UPDATES => {
             let pending = APP.with_borrow(|app| app.as_ref().and_then(|app| app.update.clone()));
@@ -1119,7 +1216,8 @@ fn add_tray_icon(window: HWND, icon: HICON) {
         hIcon: icon,
         ..Default::default()
     };
-    for (slot, unit) in data.szTip.iter_mut().zip("Snowpuff".encode_utf16()) {
+    let tip = tr("Snowpuff — Ctrl+Alt+H: how to use", "Snowpuff — Ctrl+Alt+H: как пользоваться");
+    for (slot, unit) in data.szTip.iter_mut().take(127).zip(tip.encode_utf16()) {
         *slot = unit;
     }
     unsafe {

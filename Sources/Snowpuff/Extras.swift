@@ -109,6 +109,8 @@ final class SceneExtras {
     func flurry() { sp_extras_flurry(handle) }
     func fireworks(seconds: Float) { sp_extras_fireworks(handle, seconds) }
     func clear() { sp_extras_clear(handle) }
+    func buildSnowman(at x: Float) { sp_extras_build_snowman(handle, x) }
+    func throwSnowball(at point: SIMD2<Float>) { sp_extras_throw(handle, point.x, point.y) }
 
     private static func rect(_ r: CGRect) -> SPRect {
         SPRect(x: Float(r.minX), y: Float(r.minY), width: Float(r.width), height: Float(r.height))

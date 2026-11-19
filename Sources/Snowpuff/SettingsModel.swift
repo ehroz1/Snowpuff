@@ -41,6 +41,8 @@ protocol SnowControls: AnyObject {
     func setSoundEffects(_ on: Bool)
     func setBatterySaver(_ on: Bool)
     func openWhatsNew()
+    func openHelp()
+    func setHotkeys(_ on: Bool)
     func reportProblem()
 }
 
@@ -99,6 +101,7 @@ final class SettingsModel: ObservableObject {
     @Published var words = false { didSet { changed(oldValue != words) { $0.setWords(words) } } }
     @Published var soundEffects = true { didSet { changed(oldValue != soundEffects) { $0.setSoundEffects(soundEffects) } } }
     @Published var batterySaver = false { didSet { changed(oldValue != batterySaver) { $0.setBatterySaver(batterySaver) } } }
+    @Published var hotkeys = true { didSet { changed(oldValue != hotkeys) { $0.setHotkeys(hotkeys) } } }
     @Published var blizzard = true { didSet { extra(oldValue != blizzard) { Preferences.blizzard = $0.blizzard } } }
     @Published var frost = true { didSet { extra(oldValue != frost) { Preferences.frost = $0.frost } } }
     @Published var fog = false { didSet { extra(oldValue != fog) { Preferences.fog = $0.fog } } }
@@ -139,6 +142,7 @@ final class SettingsModel: ObservableObject {
             model.words = Preferences.words
             model.soundEffects = Preferences.soundEffects
             model.batterySaver = Preferences.batterySaver
+            model.hotkeys = Preferences.hotkeys
             model.blizzard = Preferences.blizzard
             model.frost = Preferences.frost
             model.fog = Preferences.fog

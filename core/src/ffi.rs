@@ -167,6 +167,16 @@ pub unsafe extern "C" fn sp_extras_fireworks(extras: *mut Extras, seconds: f32) 
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn sp_extras_build_snowman(extras: *mut Extras, x: f32) {
+    unsafe { &mut *extras }.build_snowman(x);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sp_extras_throw(extras: *mut Extras, x: f32, y: f32) {
+    unsafe { &mut *extras }.throw_at(V2::new(x, y));
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sp_extras_clear(extras: *mut Extras) {
     unsafe { &mut *extras }.clear();
 }
