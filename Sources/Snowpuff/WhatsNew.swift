@@ -4,7 +4,7 @@ import AppKit
 final class WhatsNewController: NSObject, NSWindowDelegate {
     /// The news of each version, newest first.
     static let notes: [(version: String, english: [String], russian: [String])] = [
-        ("1.3.0", [
+        ("1.3.1", [
             "Cherry Blossom and Hail join Snow, Autumn Leaves and Rain under Mode. Add Rain mixes rain into any of them.",
             "Real weather: Weather Outside makes it snow, rain or hail as it does where you are.",
             "Frost patterns grow in from the screen's edges, and in rain the glass mists over. Hold Option and draw on it.",
