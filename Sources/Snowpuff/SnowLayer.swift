@@ -1,6 +1,15 @@
 import Foundation
 import simd
 
+/// Float to Int that can't trap. A stray not-a-number or infinity in the physics (a zero-length direction, a window
+/// with a strange frame) would otherwise stop the app outright at the conversion; here it lands on 0 or a huge but
+/// valid Int, which the bounds checks after it turn away.
+@inline(__always)
+func safeInt(_ value: Float) -> Int {
+    guard value.isFinite else { return 0 }
+    return Int(min(max(value, -1e15), 1e15))
+}
+
 /// A height field of snow columns lying on a bed: the screen bottom, or the top edge of a window
 /// whose rounded corners curve the bed down at both ends.
 final class SnowLayer {
@@ -76,12 +85,12 @@ final class SnowLayer {
     var base: SIMD2<Float> { origin + offset }
 
     func index(at x: Float) -> Int? {
-        let i = Int(((x - base.x) / columnWidth).rounded(.down))
+        let i = safeInt(((x - base.x) / columnWidth).rounded(.down))
         return i >= 0 && i < heights.count ? i : nil
     }
 
     func clampedIndex(at x: Float) -> Int {
-        min(max(Int(((x - base.x) / columnWidth).rounded(.down)), 0), heights.count - 1)
+        min(max(safeInt(((x - base.x) / columnWidth).rounded(.down)), 0), max(heights.count - 1, 0))
     }
 
     func centerX(_ i: Int) -> Float {
@@ -166,7 +175,7 @@ final class SnowLayer {
     @discardableResult
     func deposit(_ area: Float, at x: Float, wide: Bool) -> Float {
         guard area > 0 else { return 0 }
-        let center = Int(((x - base.x) / columnWidth).rounded(.down))
+        let center = safeInt(((x - base.x) / columnWidth).rounded(.down))
         let amount = area / columnWidth
         let kernel: [(Int, Float)] = wide
             ? [(-2, 0.0625), (-1, 0.25), (0, 0.375), (1, 0.25), (2, 0.0625)]

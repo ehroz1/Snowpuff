@@ -517,7 +517,7 @@ float4 pileFragment(PileOut i) : SV_Target {
 
     // Night dims fallen leaves without draining their colour.
     color *= autumn > 0.5 ? lerp(float3(1.0, 1.0, 1.0), light.rgb, 0.4) : light.rgb;
-    color = lerp(color, rim.rgb, rim.a * exp(-depth / 2.5) * (1.0 - autumn));
+    color = lerp(color, rim.rgb, rim.a * exp(-depth / 2.5) * (1.0 - min(autumn, 1.0)));
     color = lerp(color, candle, candlelight(world) * (0.35 + 0.65 * exp(-depth / 14.0)) * 0.55);
     return float4(color * coverage, coverage);
 }

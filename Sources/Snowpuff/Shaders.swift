@@ -541,7 +541,7 @@ fragment float4 pileFragment(PileOut in [[stage_in]],
 
     // Night dims fallen leaves without draining their colour.
     color *= u.autumn > 0.5 ? mix(float3(1.0), u.light.rgb, 0.4) : u.light.rgb;
-    color = mix(color, u.rim.rgb, u.rim.a * exp(-depth / 2.5) * (1.0 - u.autumn));
+    color = mix(color, u.rim.rgb, u.rim.a * exp(-depth / 2.5) * (1.0 - min(u.autumn, 1.0)));
     color = mix(color, candle, candlelight(u, world) * (0.35 + 0.65 * exp(-depth / 14.0)) * 0.55);
     return float4(color * coverage, coverage);
 }

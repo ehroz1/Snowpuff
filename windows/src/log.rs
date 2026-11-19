@@ -15,6 +15,8 @@ pub fn start() {
     if let Some(folder) = path.parent() {
         let _ = std::fs::create_dir_all(folder);
     }
+    // The last run's log is kept beside the new one: after a crash, it is the one that tells what happened.
+    let _ = std::fs::rename(&path, path.with_extension("previous.log"));
     if let Ok(file) = File::create(path)
         && let Ok(mut log) = LOG.lock()
     {
