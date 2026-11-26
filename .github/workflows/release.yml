@@ -23,7 +23,8 @@ env:
 
 jobs:
   mac:
-    runs-on: macos-15
+    # The newest Xcode: older ones give up type-checking some of the snow's longer expressions.
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
