@@ -1,5 +1,6 @@
 module CSnowpuffNet [system] {
     header "snowpuff_net.h"
+    header "snowpuff_core.h"
     link "snowpuff_mac"
     export *
 }

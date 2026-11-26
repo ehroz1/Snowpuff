@@ -4343,6 +4343,69 @@ final class SnowSimulation {
     private static func columnCount(for width: Float, columnWidth: Float) -> Int {
         Int((width / columnWidth).rounded(.up)) + 1
     }
+
+    // MARK: - Snowpuff
+
+    /// How deep the snow lies on a window, for the icicles under it.
+    func snowDepth(onWindow id: CGWindowID) -> Float {
+        ledges[id]?.top ?? 0
+    }
+
+    /// The top of the drift along the bottom of the screen at `x`, in points from the bottom.
+    func groundLevel(at x: Float) -> Float {
+        guard ground.count > 0 else { return 0 }
+        let i = min(max(Int(((x - ground.base.x) / ground.columnWidth).rounded(.down)), 0), ground.count - 1)
+        return ground.surface(i)
+    }
+
+    /// A breath into the microphone: the snow in the air is blown up and away from the bottom middle of the screen,
+    /// and what lies on the drifts is lifted off them, the more the nearer.
+    func breathe(_ strength: Float) {
+        let power = min(max(strength, 0), 1.5)
+        guard power > 0 else { return }
+        stirred()
+        let source = SIMD2<Float>(width / 2, -height * 0.25)
+        for i in flakes.indices where flakes[i].blown == 0 && !flakes[i].rain {
+            let away = flakes[i].position - source
+            let length = max(simd_length(away), 1)
+            let reach = exp(-length / (height * 1.4))
+            flakes[i].velocity += away / length * (450 + 900 * flakes[i].depth) * power * reach
+        }
+        for layer in layers where layer.top > 0.3 {
+            var dust: Float = 0
+            for i in 0..<layer.count {
+                let height = layer.heights[i]
+                guard height > 0 else { continue }
+                let x = layer.centerX(i)
+                let surface = layer.surface(i)
+                let distance = simd_length(SIMD2(x, surface) - source) / max(width, 1)
+                let loss = height * min(0.9, power * 0.6 * exp(-distance * 1.3))
+                guard loss > 0.01 else { continue }
+                layer.set(i, height - loss)
+                heightsChanged = true
+                guard layer.visible[i] else { continue }
+                dust += loss * layer.columnWidth
+                let direction: Float = x < width / 2 ? -1 : 1
+                while dust >= 4 {
+                    lift(at: SIMD2(x, surface), direction: direction)
+                    dust -= 4
+                }
+            }
+        }
+    }
+
+    /// A broken icicle bursting into snow where it lands.
+    func shatterIcicle(at point: SIMD2<Float>, size: Float) {
+        let count = min(Int(size * 0.6) + 4, 40)
+        var pieces: [ScatterPiece] = []
+        pieces.reserveCapacity(count)
+        for _ in 0..<count {
+            let angle = random.range(0.15, .pi - 0.15)
+            let speed = random.range(60, 260)
+            pieces.append(ScatterPiece(position: point, velocity: SIMD2(cos(angle), sin(angle)) * speed, color: SIMD3(0.9, 0.95, 1)))
+        }
+        scatter(pieces)
+    }
 }
 
 // MARK: - Neighbouring displays

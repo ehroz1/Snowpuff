@@ -1,4 +1,5 @@
 import AppKit
+import CSnowpuffNet
 import MetalKit
 import ServiceManagement
 
@@ -55,12 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var welcome: WelcomeController?
     private let power = PowerMonitor()
     private var halloweenTimer: Timer?
+    /// Snowpuff's own parts: sound, breath, calls, the weather outside, shortcuts and the rest.
+    private let parts = SnowpuffParts()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if AppMover.moveIfNeeded() {
             NSApp.terminate(nil)
             return
         }
+        CrashGuard.start()
+        SettingsFile.restoreIfNeeded()
         Preferences.registerSnowpuffDefaults()
         Preferences.registerDefaults()
         guard let device = Self.lowPowerDevice() ?? MTLCreateSystemDefaultDevice() else {
@@ -95,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         })
         screenshots.stepAside = { [weak self] aside in self?.screens.forEach { $0.stepAside(aside) } }
         screenshots.start()
+        setUpSnowpuff()
         if snowfallHeld {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.showWelcome() }
         }
@@ -121,11 +127,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 snow.simulation.snowfallReleased = { [weak self] in self?.releaseSnowfall() }
                 snow.halloween = halloween
                 snow.newYear = newYear
-                snow.modes = Preferences.modes
+                snow.modes = modesNow
                 snow.maxFrameRate = Preferences.maxPerformance
                 snow.activityChanged = { [weak self] in self?.updateActivity() }
                 snow.apply(power.budget)
                 screens.append(snow)
+                preparePuff(snow)
             }
         }
         displays.snows = screens
@@ -246,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem = toggle(tr("login"), #selector(toggleOpenAtLogin), to: settings)
         updatesItem = add(tr("updates"), #selector(checkForUpdates), to: settings)
         menu.addItem(withTitle: tr("settings"), action: nil, keyEquivalent: "").submenu = settings
+        addSnowpuffItems(modes: modes, settings: settings, menu: menu)
         add(tr("support"), #selector(openSponsors), to: menu).attributedTitle = Self.supportTitle
         menu.addItem(withTitle: tr("quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
@@ -330,6 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         newYearItem.state = NewYear.isWanted ? .on : .off
         newYearItem.isEnabled = modes == [.snow]
         updateFightItems()
+        updateSnowpuffItems()
         maxPerformanceItem.state = Preferences.maxPerformance ? .on : .off
         behindWindowsItem.state = behindWindows ? .on : .off
         fullScreenItem.state = Preferences.showOverFullScreen ? .on : .off
@@ -347,7 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func select(intensity: Double) {
         Preferences.intensity = intensity
-        for snow in screens { snow.simulation.intensity = Float(intensity) }
+        applyWeather()
         updateStatusIcon()
     }
 
@@ -385,7 +394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func clearSnow() {
         let direction = screens.first?.simulation.breezeDirection ?? -1
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        for snow in screens { snow.simulation.blowAway(direction: direction, calm: calm) }
+        for snow in screens {
+            snow.simulation.blowAway(direction: direction, calm: calm)
+            snow.puff.clear(calm: calm)
+            snow.stir()
+        }
     }
 
     @objc private func toggleBehindWindows() {
@@ -456,7 +469,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusIcon()
         let direction = screens.first?.simulation.breezeDirection ?? -1
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        for snow in screens { snow.simulation.switchMode(to: Preferences.modes, direction: direction, calm: calm) }
+        for snow in screens { snow.simulation.switchMode(to: modesNow, direction: direction, calm: calm) }
+        applyWeather()
     }
 
     @objc private func toggleMaxPerformance() {
@@ -581,6 +595,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         SnowballRoom.shared.leaveNow()
+        SettingsFile.save()
         if let before = performanceBeforeFight { Preferences.maxPerformance = before }
     }
 
@@ -683,4 +698,408 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             snow.setActive(awake && !snow.givesWay && (snow.window.occlusionState.contains(.visible) || snow.fading), asleep: !awake)
         }
     }
+}
+
+/// What Snowpuff keeps for its own parts over the Snowhush snow.
+final class SnowpuffParts {
+    let ambience = Ambience()
+    let breath = Breath()
+    let calls = CallMonitor()
+    let liveWeather = LiveWeather()
+    let snowWord = SnowWord()
+    let whatsNew = WhatsNewController()
+    var hotKeys: HotKeys?
+    /// A call is on: the snow and its sound step aside.
+    var hushed = false
+    /// The intensity before ⌃⌥S turned the snow off.
+    var intensityBefore: Double?
+    var clickMonitors: [Any] = []
+    var items: [(item: NSMenuItem, isOn: () -> Bool)] = []
+    var soundItems: [(item: NSMenuItem, mode: Ambience.Mode)] = []
+    var hailItem: NSMenuItem?
+    var liveWeatherItem: NSMenuItem?
+    let volumeSlider = MenuSlider(range: 0.05...1)
+    var countdownItem: NSMenuItem?
+}
+
+// MARK: - Snowpuff
+
+extension AppDelegate {
+    /// What falls now: the weather outside while that is on, else what Mode says.
+    var modesNow: [Mode] {
+        guard Preferences.liveWeather, let now = parts.liveWeather.now else { return Preferences.modes }
+        switch now.weather {
+        case .rain: return [.rain]
+        case .leaves: return [.autumn]
+        case .petals: return [.blossom]
+        default: return [.snow]
+        }
+    }
+
+    /// Hail beats down instead of what Mode says.
+    private var hailing: Bool {
+        if Preferences.liveWeather, let now = parts.liveWeather.now { return now.weather == .hail }
+        return Preferences.hail
+    }
+
+    private var intensityNow: Double {
+        if Preferences.liveWeather, let now = parts.liveWeather.now { return now.snowfall.intensity }
+        return Preferences.intensity
+    }
+
+    fileprivate func setUpSnowpuff() {
+        let ambience = parts.ambience
+        ambience.volume = Preferences.ambienceVolume
+        ambience.mode = Ambience.Mode(rawValue: Preferences.ambience) ?? .off
+        ambience.effects = Preferences.soundEffects
+        parts.breath.puffed = { [weak self] strength in
+            guard let self, !parts.hushed else { return }
+            for snow in screens {
+                snow.simulation.breathe(strength)
+            }
+        }
+        if Preferences.puff { parts.breath.start { started in if !started { Preferences.puff = false } } }
+        parts.calls.listeningItself = { [weak self] in self?.parts.breath.isListening ?? false }
+        parts.calls.changed = { [weak self] inCall in self?.setHushed(inCall) }
+        if Preferences.quietOnCalls { parts.calls.start() }
+        parts.snowWord.typed = { [weak self] in
+            self?.screens.forEach {
+                $0.puff.flurry()
+                $0.stir()
+            }
+        }
+        if Preferences.words { parts.snowWord.start() }
+        parts.hotKeys = HotKeys { [weak self] action in self?.hotKey(action) }
+        if Preferences.hotkeys { parts.hotKeys?.start() }
+        parts.liveWeather.changed = { [weak self] in self?.weatherOutsideChanged() }
+        parts.liveWeather.failed = { [weak self] message in
+            Preferences.liveWeather = false
+            self?.weatherOutsideChanged()
+            self?.tell(message)
+        }
+        if Preferences.liveWeather { parts.liveWeather.start() }
+        updater.mayInstallQuietly = { [weak self] in !(self?.parts.hushed ?? false) }
+        // A click on an icicle knocks it down with a ring.
+        let knock: (NSEvent) -> Void = { [weak self] _ in self?.knockIcicles() }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: knock) { parts.clickMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { event in knock(event); return event }) {
+            parts.clickMonitors.append(local)
+        }
+        SettingsFile.startSaving()
+        // What's New, once after an update; a first run gets the welcome instead.
+        if !Preferences.welcomed {
+            Preferences.lastSeenVersion = Updater.version
+        } else if Preferences.lastSeenVersion != Updater.version {
+            Preferences.lastSeenVersion = Updater.version
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.parts.whatsNew.show() }
+        }
+        applyWeather()
+    }
+
+    /// A new display's Snowpuff parts: what it hears, its glow, and the weather.
+    fileprivate func preparePuff(_ snow: ScreenSnow) {
+        snow.puff.heard = { [weak self] cues in
+            guard let self, !parts.hushed else { return }
+            for cue in cues { parts.ambience.play(cue) }
+        }
+        applyWeather(only: snow)
+    }
+
+    /// Sets every display to the weather: how much falls, hail, the icicles and the extras, and the sounds of rain.
+    fileprivate func applyWeather(only: ScreenSnow? = nil) {
+        let modes = modesNow
+        let hail = hailing
+        let intensity = intensityNow
+        let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let weather: Weather = hail ? .hail : modes.count == 1 ? [Weather.snow, .leaves, .rain, .petals][modes[0].rawValue] : modes.contains(.snow) ? .snow : .leaves
+        let fog = Preferences.fog || (Preferences.liveWeather && parts.liveWeather.now?.fog == true)
+        let settings = SPSettings(
+            weather: weather.core,
+            blizzard: Preferences.blizzard ? 1 : 0,
+            fog: fog ? 1 : 0,
+            stars: Preferences.stars ? 1 : 0,
+            garland: Preferences.garland ? 1 : 0,
+            frost: Preferences.frost ? 1 : 0,
+            creatures: Preferences.creatures ? 1 : 0,
+            padding: 0,
+            intensity: Float(intensity) * 2
+        )
+        for snow in only.map({ [$0] }) ?? screens {
+            // Hail falls alone: the snow, leaves or rain stop while it beats down.
+            snow.simulation.intensity = hail ? 0 : Float(intensity)
+            snow.puff.apply(settings)
+            snow.puff.warmGlow = Preferences.warmGlow
+            snow.puff.setIcicles(Preferences.icicles && modes.contains(.snow) && !hail, calm: calm)
+            snow.stir()
+        }
+        let ambience = parts.ambience
+        ambience.rainLevel = modes.contains(.rain) && !hail ? Float(intensity) * 2 : 0
+        ambience.hailLevel = hail ? Float(intensity) * 2 : 0
+        ambience.windiness = Float(min(max(intensity * 1.2, 0.15), 1))
+    }
+
+    private func weatherOutsideChanged() {
+        let direction = screens.first?.simulation.breezeDirection ?? -1
+        let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        for snow in screens where snow.simulation.modes != modesNow {
+            snow.simulation.switchMode(to: modesNow, direction: direction, calm: calm)
+        }
+        applyWeather()
+        updateStatusIcon()
+    }
+
+    private func setHushed(_ on: Bool) {
+        guard parts.hushed != on else { return }
+        parts.hushed = on
+        if on {
+            if parts.breath.isListening { parts.breath.stop() }
+        } else if Preferences.puff {
+            parts.breath.start()
+        }
+        parts.ambience.muted = on
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = on ? 0.6 : 1.2
+            for snow in screens {
+                snow.window.contentView?.animator().alphaValue = on ? 0 : 1
+                snow.dock.window.contentView?.animator().alphaValue = on ? 0 : 1
+            }
+        }
+    }
+
+    private func knockIcicles() {
+        let mouse = NSEvent.mouseLocation
+        for snow in screens where snow.window.frame.contains(mouse) {
+            let point = SIMD2(Float(mouse.x - snow.window.frame.minX), Float(mouse.y - snow.window.frame.minY))
+            guard let pitch = snow.puff.knock(at: point) else { continue }
+            if !parts.hushed { parts.ambience.play(SPCue(kind: 1, value: pitch)) }
+            snow.stir()
+        }
+    }
+
+    private func hotKey(_ action: HotKeys.Action) {
+        switch action {
+        case .snow:
+            if Preferences.intensity > 0 {
+                parts.intensityBefore = Preferences.intensity
+                select(intensity: 0)
+            } else {
+                select(intensity: parts.intensityBefore ?? 0.5)
+            }
+        case .mode:
+            let next = Mode.allCases[(Preferences.mode.rawValue + 1) % Mode.allCases.count]
+            Preferences.mode = next
+            if Preferences.mixed { Preferences.mix = [Preferences.mix[1], next] }
+            switchModes()
+        case .clear:
+            clearSnow()
+        case .frost:
+            Preferences.frost.toggle()
+            applyWeather()
+        case .garland:
+            Preferences.garland.toggle()
+            applyWeather()
+        case .help:
+            parts.whatsNew.showHelp()
+        case .snowman, .snowball:
+            // Snowmen and snowballs are the snowball fight's now, in the menu.
+            break
+        }
+    }
+
+    private func tell(_ text: String) {
+        let alert = NSAlert()
+        alert.messageText = "Snowpuff"
+        alert.informativeText = text
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    // MARK: Menu
+
+    fileprivate func addSnowpuffItems(modes: NSMenu, settings: NSMenu, menu: NSMenu) {
+        modes.addItem(.separator())
+        parts.hailItem = snowpuffToggle(tr("Hail", "Град"), modes, { Preferences.hail }) { [unowned self] in
+            Preferences.hail.toggle()
+            applyWeather()
+            updateStatusIcon()
+        }
+        parts.liveWeatherItem = snowpuffToggle(tr("Weather Outside", "Погода за окном"), modes, { Preferences.liveWeather }) { [unowned self] in
+            Preferences.liveWeather.toggle()
+            if Preferences.liveWeather { parts.liveWeather.start() } else { parts.liveWeather.stop() }
+            weatherOutsideChanged()
+        }
+
+        settings.addItem(.separator())
+        settings.addItem(.sectionHeader(title: tr("Magic", "Волшебство")))
+        snowpuffToggle(tr("Icicles", "Сосульки"), settings, { Preferences.icicles }) { [unowned self] in
+            Preferences.icicles.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Warm Window Glow", "Тёплый свет окна"), settings, { Preferences.warmGlow }) { [unowned self] in
+            Preferences.warmGlow.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Frost on the Glass", "Морозные узоры"), settings, { Preferences.frost }) { [unowned self] in
+            Preferences.frost.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Garland on Windows", "Гирлянда на окнах"), settings, { Preferences.garland }) { [unowned self] in
+            Preferences.garland.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Stars at Night", "Звёзды ночью"), settings, { Preferences.stars }) { [unowned self] in
+            Preferences.stars.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Fog", "Туман"), settings, { Preferences.fog }) { [unowned self] in
+            Preferences.fog.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Swirl Behind the Cursor", "Вихрь за курсором"), settings, { Preferences.blizzard }) { [unowned self] in
+            Preferences.blizzard.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Cat and Bullfinch", "Кот и снегирь"), settings, { Preferences.creatures }) { [unowned self] in
+            Preferences.creatures.toggle()
+            applyWeather()
+        }
+        snowpuffToggle(tr("Blow on the Snow", "Подуть на снег"), settings, { Preferences.puff }) { [unowned self] in
+            if Preferences.puff {
+                Preferences.puff = false
+                parts.breath.stop()
+            } else {
+                Preferences.puff = true
+                parts.breath.start { started in
+                    if !started {
+                        Preferences.puff = false
+                        self.tell(tr("Snowpuff needs the microphone to hear you blow: allow it in System Settings › Privacy & Security › Microphone.",
+                                     "Чтобы услышать, как ты дуешь, Snowpuff нужен микрофон: разреши его в «Системных настройках → Конфиденциальность и безопасность → Микрофон»."))
+                    }
+                }
+            }
+        }
+        snowpuffToggle(tr("Type “snow” for a Flurry", "Слово «снег» — снегопад"), settings, { Preferences.words }) { [unowned self] in
+            Preferences.words.toggle()
+            if Preferences.words { parts.snowWord.start() } else { parts.snowWord.stop() }
+        }
+        snowpuffToggle(tr("Shortcuts ⌃⌥", "Горячие клавиши ⌃⌥"), settings, { Preferences.hotkeys }) { [unowned self] in
+            Preferences.hotkeys.toggle()
+            if Preferences.hotkeys { parts.hotKeys?.start() } else { parts.hotKeys?.stop() }
+        }
+        snowpuffToggle(tr("Hide During Calls", "Прятать на созвонах"), settings, { Preferences.quietOnCalls }) { [unowned self] in
+            Preferences.quietOnCalls.toggle()
+            if Preferences.quietOnCalls {
+                parts.calls.start()
+            } else {
+                parts.calls.stop()
+                setHushed(false)
+            }
+        }
+
+        settings.addItem(.separator())
+        settings.addItem(.sectionHeader(title: tr("Sound", "Звук")))
+        for mode in Ambience.Mode.allCases {
+            let item = snowpuffToggle(mode.title, settings, { Preferences.ambience == mode.rawValue }) { [unowned self] in
+                Preferences.ambience = mode.rawValue
+                parts.ambience.mode = mode
+            }
+            parts.soundItems.append((item, mode))
+        }
+        parts.volumeSlider.changed = { [unowned self] volume in
+            Preferences.ambienceVolume = Float(volume)
+            parts.ambience.volume = Float(volume)
+        }
+        let volume = NSMenuItem()
+        volume.view = parts.volumeSlider
+        settings.addItem(volume)
+        snowpuffToggle(tr("Sound Effects", "Звуковые эффекты"), settings, { Preferences.soundEffects }) { [unowned self] in
+            Preferences.soundEffects.toggle()
+            parts.ambience.effects = Preferences.soundEffects
+        }
+        settings.addItem(.separator())
+        snowpuffToggle(tr("Install Updates Automatically", "Обновляться автоматически"), settings, { Preferences.autoUpdate }) {
+            Preferences.autoUpdate.toggle()
+        }
+        snowpuffAction(tr("Show Settings File", "Показать файл настроек"), settings) {
+            SettingsFile.save()
+            NSWorkspace.shared.activateFileViewerSelecting([SettingsFile.url])
+        }
+
+        menu.addItem(.separator())
+        let countdown = menu.addItem(withTitle: "", action: nil, keyEquivalent: "")
+        countdown.isEnabled = false
+        parts.countdownItem = countdown
+        snowpuffAction(tr("How to Use…", "Как пользоваться…"), menu) { [unowned self] in parts.whatsNew.showHelp() }
+        snowpuffAction(tr("What's New", "Что нового"), menu) { [unowned self] in parts.whatsNew.show() }
+        snowpuffAction(tr("Report a Problem…", "Сообщить о проблеме…"), menu) { Self.reportProblem() }
+    }
+
+    fileprivate func updateSnowpuffItems() {
+        for (item, isOn) in parts.items { item.state = isOn() ? .on : .off }
+        parts.hailItem?.isEnabled = !Preferences.liveWeather
+        parts.volumeSlider.value = Double(Preferences.ambienceVolume)
+        parts.countdownItem?.title = Self.newYearCountdown
+        if Preferences.liveWeather, let summary = parts.liveWeather.summary {
+            parts.liveWeatherItem?.title = tr("Weather Outside", "Погода за окном") + " · " + summary
+            (parts.liveWeatherItem?.view as? MenuToggle)?.fit(parts.liveWeatherItem?.title ?? "")
+        }
+    }
+
+    @discardableResult
+    private func snowpuffToggle(_ title: String, _ menu: NSMenu, _ isOn: @escaping () -> Bool, _ action: @escaping () -> Void) -> NSMenuItem {
+        let item = toggle(title, #selector(snowpuffItemChosen(_:)), to: menu)
+        item.representedObject = SnowpuffAction(action)
+        parts.items.append((item, isOn))
+        return item
+    }
+
+    private func snowpuffAction(_ title: String, _ menu: NSMenu, _ action: @escaping () -> Void) {
+        let item = menu.addItem(withTitle: title, action: #selector(snowpuffItemChosen(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = SnowpuffAction(action)
+    }
+
+    @objc fileprivate func snowpuffItemChosen(_ sender: Any?) {
+        let item = (sender as? NSMenuItem) ?? parts.items.first { $0.item.view === (sender as? NSView) }?.item
+        (item?.representedObject as? SnowpuffAction)?.run()
+        if let menu = statusItem.menu {
+            menuNeedsUpdate(menu)
+            menu.items.forEach { $0.view?.needsDisplay = true }
+            menu.items.compactMap(\.submenu).forEach { $0.items.forEach { $0.view?.needsDisplay = true } }
+        }
+    }
+
+    private static var newYearCountdown: String {
+        let calendar = Calendar.current
+        let now = Date()
+        let year = calendar.component(.year, from: now)
+        guard let newYear = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) else { return "" }
+        let left = calendar.dateComponents([.day, .hour, .minute], from: now, to: newYear)
+        let days = left.day ?? 0, hours = left.hour ?? 0, minutes = left.minute ?? 0
+        if days == 0 { return tr("New Year in \(hours) h \(minutes) min", "До Нового года \(hours) ч \(minutes) мин") }
+        return tr("New Year in \(days) d \(hours) h", "До Нового года \(days) дн \(hours) ч")
+    }
+
+    /// A new issue on GitHub with the version and the system filled in; nothing is sent until it is submitted.
+    private static func reportProblem() {
+        let system = ProcessInfo.processInfo.operatingSystemVersionString
+        let body = """
+        \(tr("What happened, and what did you expect?", "Что случилось и чего ты ждал?"))
+
+
+
+        —
+        Snowpuff \(Updater.version), macOS \(system)
+        """
+        var parts = URLComponents(string: "https://github.com/\(Updater.repository)/issues/new")!
+        parts.queryItems = [URLQueryItem(name: "body", value: body)]
+        if let url = parts.url { NSWorkspace.shared.open(url) }
+    }
+}
+
+/// A menu row's action, carried by the row.
+final class SnowpuffAction: NSObject {
+    private let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    func run() { action() }
 }

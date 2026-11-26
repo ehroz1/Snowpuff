@@ -7,6 +7,8 @@ final class ScreenSnow {
     let window: OverlayWindow
     let dock: DockOverlay
     let simulation: SnowSimulation
+    /// Snowpuff's own parts: the extras, the icicles, frost and the window's glow.
+    let puff: PuffScene
     private let view: MTKView
     private let renderer: Renderer
     private let tracker: WindowTracker
@@ -127,6 +129,8 @@ final class ScreenSnow {
         self.screen = screen
         self.simulation = simulation
         self.renderer = renderer
+        puff = PuffScene(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        renderer.puff = puff
         window = OverlayWindow(screen: screen)
         window.behindWindows = Preferences.behindWindows
         window.showsInScreenshots = Preferences.showInScreenshots
@@ -161,8 +165,10 @@ final class ScreenSnow {
             forgetClosed(now: now)
             for (id, display) in update?.handed ?? [:] { displays.hand(id, from: self, to: display) }
             self.simulation.windowFrames = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
+            puff.setCovers(self.simulation.windowFrames)
             return update
         }
+        renderer.topInset = { [unowned self] in Float(tracker.menuBarHeight) }
         renderer.borrowedSnow = { [unowned self] in
             surfaces().contains(.windows) ? displays.borrowed(by: self) : []
         }
@@ -206,6 +212,7 @@ final class ScreenSnow {
         Renderer.fitDrawable(of: view)
         placeTree()
         simulation.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
+        puff.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
         picture?.fit(to: screen)
         light.invalidate()
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
@@ -250,6 +257,9 @@ final class ScreenSnow {
         view.isPaused = !active
         if active { renderer.resetClock() }
     }
+
+    /// Wakes the drawing for something Snowpuff's parts start: a flurry, a knocked icicle.
+    func stir() { wake() }
 
     private func wake() {
         picture?.wake()

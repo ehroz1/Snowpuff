@@ -37,6 +37,8 @@ vtool -set-build-version macos "$minimum" "$(xcrun --sdk macosx --show-sdk-versi
 strip -x "$app/Contents/MacOS/Snowpuff"
 cp Resources/Info.plist "$app/Contents/"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
+# Snowpuff's extras are drawn by shaders shared with Windows.
+cp shaders/extras.shader "$app/Contents/Resources/"
 
 # The depth network that finds the tops of things in the wallpaper for snow to lie on: Apple's Core ML conversion of
 # Depth Anything V2 Small, palettized to 6 bits (Apache-2.0). Fetched once at a fixed revision, checked, compiled.
@@ -70,6 +72,7 @@ for strings in locales/*.strings; do
     mkdir -p "$lproj"
     plutil -convert binary1 -o "$lproj/Localizable.strings" "$strings"
 done
+printf '"NSMicrophoneUsageDescription" = "Snowpuff слушает микрофон только чтобы заметить, что ты дуешь на снег. Ничего не записывается и никуда не отправляется.";\n"NSLocationUsageDescription" = "«Погода за окном» включает снег или дождь, как у тебя на улице. Место округляется и нужно только чтобы узнать погоду на open-meteo.com.";\n"NSLocationWhenInUseUsageDescription" = "«Погода за окном» включает снег или дождь, как у тебя на улице. Место округляется и нужно только чтобы узнать погоду на open-meteo.com.";\n' > "$app/Contents/Resources/ru.lproj/InfoPlist.strings"
 
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"

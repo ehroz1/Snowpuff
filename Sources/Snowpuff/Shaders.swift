@@ -23,6 +23,8 @@ struct Uniforms {
     float4 pumpkins[3];
     float4 garland[3];
     float4 garlandColors[3];
+    float4 hearth;
+    float4 hearthLight;
 };
 
 struct Sprite {
@@ -517,6 +519,17 @@ static float candlelight(constant Uniforms &u, float2 point) {
         if (pumpkin.w <= 0.0) continue;
         float2 e = point - pumpkin.xy;
         glow += pumpkin.w * flicker(u.time, float(k + 1)) * exp(-dot(e, e) / (pumpkin.z * pumpkin.z));
+    }
+    // Snowpuff: the focused window's warm glow spills a little round it and further below, onto the drift.
+    if (u.hearthLight.y > 0.0) {
+        float2 center = (u.hearth.xy + u.hearth.zw) * 0.5;
+        float2 half_ = (u.hearth.zw - u.hearth.xy) * 0.5;
+        float2 q = point - center;
+        float2 out_ = max(abs(q) - half_, float2(0.0));
+        float reachY = q.y < 0.0 ? u.hearthLight.z : u.hearthLight.x;
+        float spill = exp(-out_.x * out_.x / (u.hearthLight.x * u.hearthLight.x) - out_.y * out_.y / (reachY * reachY));
+        float inside = mix(0.35, 1.0, saturate(length(out_) / 10.0));
+        glow += u.hearthLight.y * spill * inside * (0.94 + 0.06 * sin(u.time * 0.7));
     }
     return min(glow, 1.0);
 }

@@ -29,6 +29,9 @@ struct Uniforms {
     /// The New Year's garland lighting the snow round the tree's foot: where, how far and how brightly, and in what colour.
     var garland = (SIMD4<Float>(0, 0, 0, 0), SIMD4<Float>(0, 0, 0, 0), SIMD4<Float>(0, 0, 0, 0))
     var garlandColors = (SIMD4<Float>(0, 0, 0, 0), SIMD4<Float>(0, 0, 0, 0), SIMD4<Float>(0, 0, 0, 0))
+    /// Snowpuff's warm glow from the focused window: its frame, and how far and how brightly it spills.
+    var hearth = SIMD4<Float>(0, 0, 0, 0)
+    var hearthLight = SIMD4<Float>(0, 0, 0, 0)
 }
 
 struct PumpkinUniforms {
@@ -75,6 +78,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     var sceneLight: (CFTimeInterval) -> (light: SIMD3<Float>, shadowTint: SIMD4<Float>, rim: SIMD4<Float>, lantern: Float) = { _ in (SIMD3(repeating: 1), .zero, .zero, 0) }
     private var ambient: (light: SIMD3<Float>, shadowTint: SIMD4<Float>, rim: SIMD4<Float>, lantern: Float) = (SIMD3(repeating: 1), .zero, .zero, 0)
     private var lanternAt = SIMD2<Float>(-10_000, -10_000)
+    /// Snowpuff's own parts on this display: the extras, icicles and frost, and the window's glow.
+    var puff: PuffScene?
+    private var puffRenderer: PuffRenderer?
+    /// Room taken along the top by the menu bar: the garland hangs below it.
+    var topInset: () -> Float = { 0 }
 
     private let simulation: SnowSimulation
     private let device: MTLDevice
@@ -119,6 +127,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.pumpkinPipeline = pipelines.pumpkin
         self.glassPipeline = pipelines.glass
         self.fieldPipeline = pipelines.field
+        self.puffRenderer = PuffRenderer(device: device, pixelFormat: pixelFormat)
         super.init()
     }
 
@@ -246,6 +255,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         ambient = sceneLight(now)
         if let update = windowSurfaces(now) {
+            puff?.update(update)
             simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked, elsewhere: update.elsewhere, sliding: update.sliding)
             if update.slideVelocity != 0 { simulation.spaceSlid(velocity: update.slideVelocity) }
         }
@@ -253,15 +263,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         simulation.celebration = simulation.tree != nil ? NewYear.celebration() : nil
         simulation.fireworksPerMinute = simulation.tree != nil ? NewYear.fireworksPerMinute() : 0
         let cursor = cursorLocation()
-        let changed = simulation.step(dt: dt, cursor: cursor)
+        var changed = simulation.step(dt: dt, cursor: cursor)
         stepped()
+        var puffSmooth = false
+        if let puff {
+            let inside = cursor.x >= 0 && cursor.y >= 0 && cursor.x <= simulation.width && cursor.y <= simulation.height
+            let daylight = min(max((simd_reduce_max(ambient.light) - 0.45) / 0.5, 0), 1)
+            let moved = puff.step(dt: dt, cursor: inside ? cursor : nil, daylight: daylight, topInset: topInset(), simulation: simulation)
+            if moved.changed { changed = true }
+            puffSmooth = moved.smooth
+        }
         // The frame shown last stays up, as it would anyway with nothing to draw, without ticking over in vain.
-        if !changed && simulation.isEmpty {
+        if !changed && simulation.isEmpty && (puff?.isEmpty ?? true) {
             rest()
             return
         }
         // The lantern follows the cursor even over snow that lies still.
-        let lanternMoved = ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5 && (lights(cursor) || lights(lanternAt))
+        let lanternMoved = ambient.lantern > 0 && simd_distance(cursor, lanternAt) > 0.5 && (lights(cursor) || lights(lanternAt)) || puffSmooth
         lanternAt = cursor
         let fastest = budget == .full ? interactiveFrameRate : min(60, interactiveFrameRate)
         // 24 only where it divides the display's rate evenly; elsewhere it would judder.
@@ -332,6 +350,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         if candles.count > 1 { uniforms.pumpkins.1 = candles[1] }
         if candles.count > 2 { uniforms.pumpkins.2 = candles[2] }
         if let tree = simulation.tree { light(&uniforms, from: tree) }
+        if let puff {
+            let glow = puff.glow
+            uniforms.hearth = glow.frame
+            uniforms.hearthLight = glow.light
+        }
+        let puffUniforms = PuffUniforms(viewSize: uniforms.viewSize, scale: scale, time: uniforms.time, light: uniforms.light, lantern: uniforms.lantern,
+                                        hearth: uniforms.hearth, hearthLight: uniforms.hearthLight, opacity: simulation.fallingOpacity,
+                                        shake: SIMD2(uniforms.shake.x, uniforms.shake.y))
         let uniformsLength = MemoryLayout<Uniforms>.stride
 
         let glass = sprites > 0 && simulation.hasGlassDrops ? encodeField(sprites: spriteBuffer, count: sprites, into: commandBuffer, matching: pass, uniforms: uniforms) : nil
@@ -351,6 +377,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         drawPiles(piles.filter { !$0.isDock }, with: encoder, uniforms: uniforms, heights: heightBuffer)
         drawSigns(simulation.signs, with: encoder, uniforms: uniforms)
+        if let puff, let puffRenderer { puffRenderer.encodeIcicles(puff, with: encoder, uniforms: puffUniforms) }
         if sprites > 0 {
             encoder.setRenderPipelineState(spritePipeline)
             encoder.setVertexTexture(pictureAir(), index: 0)
@@ -366,6 +393,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&uniforms, length: uniformsLength, index: 1)
             encoder.setScissorRect(scissor)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        }
+        if let puff, let puffRenderer {
+            encoder.setScissorRect(MTLScissorRect(x: 0, y: 0, width: pass.colorAttachments[0].texture?.width ?? 1, height: pass.colorAttachments[0].texture?.height ?? 1))
+            puffRenderer.encodeExtras(puff, with: encoder, uniforms: puffUniforms)
         }
         encoder.endEncoding()
         encodeDock(piles.filter(\.isDock), into: commandBuffer, uniforms: uniforms, heights: heightBuffer)
