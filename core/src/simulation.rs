@@ -3466,3 +3466,100 @@ impl Air {
         }
     }
 }
+
+// Snowpuff: what its icicles and breath need of the snow.
+impl SnowSimulation {
+    /// How deep the snow lies on a window, for the icicles under it.
+    pub fn snow_depth_on_window(&self, id: WindowId) -> f32 {
+        self.ids.iter().position(|&known| known == id).and_then(|i| self.layers.get(i + 1)).map_or(0.0, |layer| layer.top)
+    }
+
+    /// The top of the drift along the bottom of the screen at `x`, in points from the bottom.
+    pub fn ground_level(&self, x: f32) -> f32 {
+        let ground = &self.layers[0];
+        if ground.count() == 0 {
+            return 0.0;
+        }
+        ground.surface(ground.clamped_index(x))
+    }
+
+    /// A breath into the microphone: the snow in the air is blown up and away from the bottom middle of the screen,
+    /// and what lies on the drifts is lifted off them, the more the nearer.
+    pub fn breathe(&mut self, strength: f32) {
+        let power = strength.clamp(0.0, 1.5);
+        if power <= 0.0 {
+            return;
+        }
+        let (width, height) = (self.width(), self.height());
+        let source = V2::new(width / 2.0, -height * 0.25);
+        for flake in &mut self.air.flakes {
+            if flake.blown != 0.0 || flake.kind == Mode::Rain {
+                continue;
+            }
+            let away = flake.position - source;
+            let length = away.length().max(1.0);
+            let reach = (-length / (height * 1.4)).exp();
+            flake.velocity += away / length * (450.0 + 900.0 * flake.depth) * power * reach;
+        }
+        let mut lifts = Vec::new();
+        for layer in &mut self.layers {
+            if layer.top <= 0.3 {
+                continue;
+            }
+            let mut dust = 0.0;
+            for i in 0..layer.count() {
+                let depth = layer.heights[i];
+                if depth <= 0.0 {
+                    continue;
+                }
+                let x = layer.center_x(i);
+                let surface = layer.surface(i);
+                let distance = (V2::new(x, surface) - source).length() / width.max(1.0);
+                let loss = depth * (power * 0.6 * (-distance * 1.3).exp()).min(0.9);
+                if loss <= 0.01 {
+                    continue;
+                }
+                layer.set(i, depth - loss);
+                self.air.heights_changed = true;
+                if !layer.visible[i] {
+                    continue;
+                }
+                dust += loss * layer.column_width;
+                while dust >= 4.0 && lifts.len() < 400 {
+                    lifts.push((V2::new(x, surface), if x < width / 2.0 { -1.0 } else { 1.0 }));
+                    dust -= 4.0;
+                }
+            }
+        }
+        for (at, direction) in lifts {
+            self.air.lift(at, direction);
+        }
+    }
+
+    /// A broken icicle bursting into snow where it lands.
+    pub fn shatter_icicle(&mut self, at: V2, size: f32) {
+        let count = ((size * 0.6) as usize + 4).min(40);
+        let pieces: Vec<ScatterPiece> = (0..count)
+            .map(|_| {
+                let angle = self.air.random.range(0.15, std::f32::consts::PI - 0.15);
+                let speed = self.air.random.range(60.0, 260.0);
+                ScatterPiece { position: at, velocity: V2::new(angle.cos(), angle.sin()) * speed, color: [0.9, 0.95, 1.0] }
+            })
+            .collect();
+        self.scatter(&pieces);
+    }
+}
+
+impl crate::puff::icicles::Snow for SnowSimulation {
+    fn depth_on_window(&self, id: WindowId) -> f32 {
+        self.snow_depth_on_window(id)
+    }
+
+    fn ground_level(&self, x: f32) -> f32 {
+        SnowSimulation::ground_level(self, x)
+    }
+
+    fn shatter(&mut self, at: V2, size: f32) {
+        self.shatter_icicle(at, size);
+    }
+}

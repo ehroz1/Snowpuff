@@ -29,6 +29,10 @@ cbuffer Uniforms : register(b0) {
     float blossom;
     // One while fallen leaves wither away.
     float wilt;
+    // Snowpuff's warm glow from the focused window: its frame, left, bottom, right, top...
+    float4 hearth;
+    // ...how far it spills sideways, how bright it is and how far it reaches below the window.
+    float4 hearthLight;
 };
 
 Buffer<float> heights : register(t0);
@@ -430,6 +434,16 @@ float candlelight(float2 at) {
         if (pumpkin.w <= 0.0) continue;
         float2 e = at - pumpkin.xy;
         glow += pumpkin.w * flicker(float(k + 1)) * exp(-dot(e, e) / (pumpkin.z * pumpkin.z));
+    }
+    if (hearthLight.y > 0.0) {
+        float2 center = (hearth.xy + hearth.zw) * 0.5;
+        float2 halfSize = (hearth.zw - hearth.xy) * 0.5;
+        float2 q = at - center;
+        float2 outside = max(abs(q) - halfSize, float2(0.0, 0.0));
+        float reachY = q.y < 0.0 ? hearthLight.z : hearthLight.x;
+        float spill = exp(-outside.x * outside.x / (hearthLight.x * hearthLight.x) - outside.y * outside.y / (reachY * reachY));
+        float inside = lerp(0.35, 1.0, saturate(length(outside) / 10.0));
+        glow += hearthLight.y * spill * inside * (0.94 + 0.06 * sin(time * 0.7));
     }
     return min(glow, 1.0);
 }

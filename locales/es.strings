@@ -91,3 +91,34 @@
 "fight.hint" = "⌘+clic en el fondo para lanzar una bola de nieve";
 "fight.hint.ctrl" = "Ctrl+clic en el fondo para lanzar una bola de nieve";
 "fight.hint.snowman" = "Haz clic en un muñeco de nieve para lanzarle una bola de nieve";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "Granizo";
+"sp.weather" = "Tiempo real";
+"sp.magic" = "Magia";
+"sp.icicles" = "Carámbanos";
+"sp.glow" = "Luz cálida de ventana";
+"sp.frost" = "Escarcha en el cristal";
+"sp.garland" = "Guirnalda en ventanas";
+"sp.stars" = "Estrellas de noche";
+"sp.fog" = "Niebla";
+"sp.swirl" = "Remolino tras el cursor";
+"sp.creatures" = "Gato y camachuelo";
+"sp.puff" = "Soplar sobre la nieve";
+"sp.words" = "Escribe «snow» para una ventisca";
+"sp.hotkeys" = "Atajos Ctrl+Alt";
+"sp.calls" = "Ocultar en llamadas";
+"sp.sound" = "Sonido";
+"sp.sound.off" = "Desactivado";
+"sp.sound.wind" = "Viento";
+"sp.sound.fire" = "Chimenea";
+"sp.sound.both" = "Viento y chimenea";
+"sp.volume" = "Volumen";
+"sp.effects" = "Efectos de sonido";
+"sp.autoupdate" = "Instalar actualizaciones automáticamente";
+"sp.help" = "Cómo se usa…";
+"sp.report" = "Informar de un problema…";
+"sp.mic" = "Snowpuff no pudo abrir el micrófono para oírte soplar. Permítelo en Configuración › Privacidad y seguridad › Micrófono.";
+"sp.updated" = "Snowpuff {version}: todo lo de Snowhush 0.14";
+"sp.updated.text" = "Nieve en tu fondo de pantalla, guerras de bolas de nieve con amigos, modo Mixto y más. Lo propio de Snowpuff está en Ajustes › Magia y Sonido.";
+"sp.help.text" = "Mantén Alt y mueve el cursor cerca de un borde: dibuja en la escarcha o en el cristal empañado.\nHaz clic en un carámbano: cae tintineando. Mueve el ratón rápido: un remolino de nieve lo sigue.\nGuerra de bolas de nieve en el menú: invita a un amigo con un enlace o únete al suyo.\nSacude una ventana y se rompen sus carámbanos.\n\nCtrl+Alt+S — nieve sí / no · Ctrl+Alt+M — siguiente modo · Ctrl+Alt+C — barrer la nieve\nCtrl+Alt+F — escarcha · Ctrl+Alt+G — guirnalda · Ctrl+Alt+H — esta ayuda";

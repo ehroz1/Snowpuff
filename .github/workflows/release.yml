@@ -1,30 +1,118 @@
-name: Linux packages
+# Builds the apps and publishes them as a GitHub release, which the Mac and Windows apps update from: Snowpuff.dmg for
+# people on a Mac, Snowpuff.zip for the Mac updater, Snowpuff-Setup.exe for Windows; the Linux packages follow.
+# Starts from a pushed tag like v1.4.0, or by hand: Actions → Release → Run workflow, with the version.
+name: Release
 
-# Builds the Linux app's packages and adds them to a release: on its own once release.sh publishes one, or by
-# hand for a release that has none yet, built from the branch the run is started on.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: The release to add them to, such as v0.6.0
+      version:
+        description: "Version, like 1.4.0"
         required: true
+      notes:
+        description: "What changed"
+        required: false
 
 permissions:
   contents: write
 
+env:
+  VERSION_INPUT: ${{ inputs.version || github.ref_name }}
+
 jobs:
-  linux:
-    name: Linux packages
-    # An older glibc than ubuntu-latest has, so the app runs on older distributions too.
-    runs-on: ubuntu-22.04
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - run: sudo apt-get update -q && sudo apt-get install -y -q libwayland-dev rpm file
-      - run: cargo build --locked --release --manifest-path linux/Cargo.toml
-      - run: linux/packaging/package.sh linux/target/release/snowpuff dist
-      - run: gh release upload "$TAG" dist/* --clobber
+      - uses: actions/checkout@v4
+      - name: Version
+        run: |
+          version=${VERSION_INPUT#v}
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" Resources/Info.plist
+      - name: Rust for both Mac architectures
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build
+        run: ./build.sh
+      - name: Disk image and update archive
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent build/Snowpuff.app dist/Snowpuff.zip
+          stage=$(mktemp -d)
+          ditto build/Snowpuff.app "$stage/Snowpuff.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -quiet -volname Snowpuff -srcfolder "$stage" -format UDZO -ov dist/Snowpuff.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/*
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        working-directory: windows
+        run: |
+          version=${VERSION_INPUT#v}
+          sed -i "0,/^version = /s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          cargo build --release --bin Snowpuff
+          SNOWPUFF_APP="$(cygpath -w "$PWD/target/release/Snowpuff.exe")" cargo build --release --bin Snowpuff-Setup --features setup
+          mkdir -p ../dist
+          cp target/release/Snowpuff-Setup.exe ../dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  publish:
+    needs: [mac, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          NOTES_INPUT: ${{ inputs.notes }}
+        run: |
+          version=${VERSION_INPUT#v}
+          tag=v$version
+          git fetch --force --tags origin
+          notes=$NOTES_INPUT
+          [ -n "$notes" ] || notes=$(git for-each-ref "refs/tags/$tag" --format='%(contents)')
+          [ -n "$notes" ] || notes="Snowpuff $version"
+          files="dist/Snowpuff.dmg dist/Snowpuff.zip dist/Snowpuff-Setup.exe"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files --target "$GITHUB_SHA" --title "Snowpuff $version" --notes "$notes"
+          fi
+
+  # The Linux packages join the release once it is out; the Mac and Windows apps don't wait for them.
+  linux:
+    needs: publish
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libwayland-dev rpm file
+      - name: Build
+        run: |
+          version=${VERSION_INPUT#v}
+          sed -i "0,/^version = /s/^version = \".*\"/version = \"$version\"/" linux/Cargo.toml
+          cargo build --release --manifest-path linux/Cargo.toml
+          linux/packaging/package.sh linux/target/release/snowpuff dist
+      - run: gh release upload "v${VERSION_INPUT#v}" dist/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

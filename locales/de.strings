@@ -91,3 +91,34 @@
 "fight.hint" = "⌘-Klick aufs Hintergrundbild wirft einen Schneeball";
 "fight.hint.ctrl" = "Strg-Klick aufs Hintergrundbild wirft einen Schneeball";
 "fight.hint.snowman" = "Klick auf einen Schneemann wirft einen Schneeball nach ihm";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "Hagel";
+"sp.weather" = "Wetter draußen";
+"sp.magic" = "Magie";
+"sp.icicles" = "Eiszapfen";
+"sp.glow" = "Warmes Fensterlicht";
+"sp.frost" = "Eisblumen am Glas";
+"sp.garland" = "Lichterkette an Fenstern";
+"sp.stars" = "Sterne bei Nacht";
+"sp.fog" = "Nebel";
+"sp.swirl" = "Wirbel hinter dem Zeiger";
+"sp.creatures" = "Katze und Gimpel";
+"sp.puff" = "Auf den Schnee pusten";
+"sp.words" = "„snow“ tippen für Schneegestöber";
+"sp.hotkeys" = "Tastenkürzel Strg+Alt";
+"sp.calls" = "Bei Anrufen ausblenden";
+"sp.sound" = "Klang";
+"sp.sound.off" = "Aus";
+"sp.sound.wind" = "Wind";
+"sp.sound.fire" = "Kamin";
+"sp.sound.both" = "Wind und Kamin";
+"sp.volume" = "Lautstärke";
+"sp.effects" = "Klangeffekte";
+"sp.autoupdate" = "Updates automatisch installieren";
+"sp.help" = "Bedienung…";
+"sp.report" = "Problem melden…";
+"sp.mic" = "Snowpuff konnte das Mikrofon nicht öffnen, um dein Pusten zu hören. Erlaube es unter Einstellungen › Datenschutz und Sicherheit › Mikrofon.";
+"sp.updated" = "Snowpuff {version}: alles aus Snowhush 0.14";
+"sp.updated.text" = "Schnee im Hintergrundbild, Schneeballschlachten mit Freunden, der Modus Gemischt und mehr. Snowpuffs eigene Extras findest du unter Einstellungen › Magie und Klang.";
+"sp.help.text" = "Halte Alt und bewege den Zeiger nahe einem Rand: Zeichne auf Eisblumen oder beschlagenes Glas.\nKlicke auf einen Eiszapfen: Er fällt mit einem Klingen. Bewege die Maus schnell: Ein Schneewirbel folgt ihr.\nSchneeballschlacht im Menü: Lade einen Freund per Link ein oder tritt seinem Raum bei.\nSchüttle ein Fenster, und seine Eiszapfen brechen ab.\n\nStrg+Alt+S — Schnee an / aus · Strg+Alt+M — nächster Modus · Strg+Alt+C — Schnee räumen\nStrg+Alt+F — Eisblumen · Strg+Alt+G — Lichterkette · Strg+Alt+H — diese Hilfe";

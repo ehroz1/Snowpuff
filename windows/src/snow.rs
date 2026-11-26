@@ -17,6 +17,7 @@ use windows::core::{HSTRING, PCWSTR, Result, w};
 use snowpuff_core::geometry::V2;
 use snowpuff_core::halloween::Choice;
 use snowpuff_core::modes::Picked;
+use snowpuff_core::puff::extras::{Settings as PuffSettings, Weather as PuffWeather};
 use snowpuff_core::simulation::{Borrowed, Mapping, Mode, ScatterPiece, SnowSimulation, Stray};
 
 use snowpuff_core::text::tr;
@@ -45,6 +46,9 @@ pub struct Piece {
     pub velocity: V2,
     pub color: [f32; 3],
 }
+
+/// A call is on and the snow steps aside for it.
+static HUSHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub enum Command {
     /// How much falls, 0 to 1.
@@ -92,6 +96,10 @@ pub enum Command {
         picked: Picked,
         calm: bool,
     },
+    /// Snowpuff's own settings changed (crate::extra), or the weather outside did.
+    Puff,
+    /// A flurry, as when "snow" is typed.
+    Flurry,
     Quit,
 }
 
@@ -167,12 +175,25 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
     watch_wallpaper(links.wake);
     // When to look at the wallpaper again, after its key changed: Explorer may name the new one a moment later.
     let mut backdrop_again: Vec<i64> = Vec::new();
+    // Snowpuff's own parts: the sounds, and whether a call has the snow step aside.
+    let mut sound = crate::audio::Sound::new();
+    let mut hushed = false;
+    let mut calls_at = 0;
+    let mut puff_settings: Option<(crate::extra::Extra, Option<(u8, bool)>, u32, Picked)> = None;
 
     loop {
         screens.iter().filter(|screen| screen.under_taskbar()).for_each(Screen::raise);
         while let Ok(command) = commands.try_recv() {
             match command {
                 Command::Quit => return Ok(()),
+                Command::Puff => puff_settings = None,
+                Command::Flurry => {
+                    let now = Clock::now();
+                    screens.iter_mut().for_each(|screen| {
+                        screen.puff.extras.flurry();
+                        screen.wake(now);
+                    });
+                }
                 Command::Intensity(intensity) => {
                     settings.intensity = (intensity * 100.0).round() as u32;
                     let now = Clock::now();
@@ -299,7 +320,10 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 }
                 Command::ClearSnow(calm) => {
                     let direction = screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
-                    screens.iter_mut().for_each(|screen| screen.simulation.blow_away(direction, calm));
+                    screens.iter_mut().for_each(|screen| {
+                        screen.simulation.blow_away(direction, calm);
+                        screen.puff.clear(calm);
+                    });
                 }
                 Command::Holidays { halloween, new_year } => {
                     settings.halloween = halloween;
@@ -334,6 +358,94 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             unsafe {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
+            }
+        }
+
+        // Snowpuff: its settings to every display, new ones too; the breath heard; calls; the sounds asked for.
+        {
+            let extra = crate::extra::get();
+            let outside = if extra.live_weather { crate::extra::outside() } else { None };
+            let key = (extra, outside.map(|o| (o.weather, o.fog)), settings.intensity, settings.picked);
+            let fresh = puff_settings.as_ref() != Some(&key) || screens.iter().any(|screen| !screen.puff.configured);
+            if fresh {
+                let calm = !prefs::animations_enabled();
+                let direction = screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
+                let (modes, hail, intensity) = match outside {
+                    Some(now) => (vec![if now.weather == 3 { Mode::Rain } else { Mode::Snow }], now.weather == 4, now.snowfall.intensity()),
+                    None => (settings.picked.modes(), extra.hail, settings.intensity as f32 / 100.0),
+                };
+                let weather = if hail {
+                    PuffWeather::Hail
+                } else if modes.len() == 1 {
+                    match modes[0] {
+                        Mode::Autumn => PuffWeather::Leaves,
+                        Mode::Rain => PuffWeather::Rain,
+                        Mode::Blossom => PuffWeather::Petals,
+                        _ => PuffWeather::Snow,
+                    }
+                } else if modes.contains(&Mode::Snow) {
+                    PuffWeather::Snow
+                } else {
+                    PuffWeather::Leaves
+                };
+                let fog = extra.fog || outside.is_some_and(|o| o.fog);
+                let wake = Clock::now();
+                for screen in &mut screens {
+                    if screen.simulation.modes() != modes.as_slice() {
+                        screen.simulation.switch_modes(&modes, direction, calm);
+                    }
+                    // Hail falls alone: the snow, leaves or rain stop while it beats down.
+                    screen.simulation.set_intensity(if hail { 0.0 } else { intensity });
+                    screen.puff.set_settings(
+                        PuffSettings {
+                            weather,
+                            intensity: intensity * 2.0,
+                            blizzard: extra.blizzard,
+                            fog,
+                            stars: extra.stars,
+                            garland: extra.garland,
+                            frost: extra.frost,
+                            creatures: extra.creatures,
+                            snowmen: false,
+                        },
+                        extra.icicles && modes.contains(&Mode::Snow) && !hail,
+                        calm,
+                    );
+                    screen.puff.warm_glow = extra.warm_glow;
+                    screen.puff.configured = true;
+                    screen.wake(wake);
+                }
+                let raining = modes.contains(&Mode::Rain) && !hail;
+                sound.set(extra.ambience, hushed, extra.volume as f32 / 100.0, (intensity * 1.2).clamp(0.15, 1.0));
+                sound.set_effects(extra.sound_effects, if raining { intensity * 2.0 } else { 0.0 }, if hail { intensity * 2.0 } else { 0.0 });
+                puff_settings = Some(key);
+            }
+            let breath = crate::extra::take_breath();
+            if breath > 0.0 && !hushed {
+                let wake = Clock::now();
+                screens.iter_mut().for_each(|screen| {
+                    screen.simulation.breathe(breath);
+                    screen.wake(wake);
+                });
+            }
+            let tick = Clock::now();
+            if clock.seconds(tick - calls_at) > 2.0 {
+                calls_at = tick;
+                let busy = extra.quiet_on_calls && crate::calls::in_use();
+                if busy != hushed {
+                    hushed = busy;
+                    log!("call: {busy}");
+                    puff_settings = None;
+                    HUSHED.store(busy, std::sync::atomic::Ordering::Relaxed);
+                    full_screen_seen.clear();
+                }
+            }
+            for screen in &mut screens {
+                for cue in screen.puff.cues.drain(..) {
+                    if !hushed {
+                        sound.play(cue);
+                    }
+                }
             }
         }
 
@@ -514,6 +626,8 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     }
                 }
                 let covering = if settings.over_full_screen { None } else { in_front };
+                // Snowpuff: during a call the snow steps aside as it does for a full-screen app.
+                let covering = if HUSHED.load(std::sync::atomic::Ordering::Relaxed) { Some(covering.unwrap_or("a call")) } else { covering };
                 if covering.is_some() != screen.covered() {
                     log!("{} {}", screen.monitor.name, covering.map_or("uncovered".to_string(), |class| format!("covered by {class}")));
                     screen.set_covered(&gpu, covering.is_some());

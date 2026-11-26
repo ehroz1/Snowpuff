@@ -37,11 +37,7 @@ pub fn check() -> Result<Option<Release>, String> {
     if !newer(version, VERSION) {
         return Ok(None);
     }
-    Ok(Some(Release {
-        version: version.to_string(),
-        url: format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{INSTALLER}"),
-        digest,
-    }))
+    Ok(Some(Release { version: version.to_string(), url: format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{INSTALLER}"), digest }))
 }
 
 /// Downloads the release's installer, checks it and starts it. The installer closes this app, so nothing
@@ -95,7 +91,11 @@ pub fn get(url: &str) -> Result<Vec<u8>, String> {
 pub fn report_link() -> String {
     let body = format!(
         "{}%0A%0A%0A—%0ASnowpuff {VERSION}, Windows",
-        if snowpuff_core::text::code() == "ru" { "Что%20случилось%20и%20чего%20ты%20ждал?" } else { "What%20happened,%20and%20what%20did%20you%20expect?" }
+        if snowpuff_core::text::code() == "ru" {
+            "Что%20случилось%20и%20чего%20ты%20ждал?"
+        } else {
+            "What%20happened,%20and%20what%20did%20you%20expect?"
+        }
     );
     format!("https://github.com/{REPOSITORY}/issues/new?body={body}")
 }

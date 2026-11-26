@@ -71,6 +71,7 @@ impl Settings {
     }
 
     pub fn load() -> Settings {
+        migrate_from_snowpuff_1_3();
         let calm = !animations_enabled();
         // Before the slider, the intensity was one of Off, Light, Steady, Heavy and Variable.
         let stop = read(w!("snowfall")).map(|i| i.min(4) as usize);
@@ -133,7 +134,152 @@ impl Settings {
         write(w!("autumn"), (self.picked.mode == Mode::Autumn) as u32);
         write(w!("performance"), self.max_performance as u32);
         write(w!("fallingOpacity"), self.opacity);
+        save_file();
     }
+}
+
+/// Snowpuff 1.3 kept some settings under other names: they are carried over once.
+fn migrate_from_snowpuff_1_3() {
+    if read(w!("migrated14")).is_some() {
+        return;
+    }
+    write(w!("migrated14"), 1);
+    let read_named = |name: &str| read(PCWSTR(windows::core::HSTRING::from(name).as_ptr()));
+    let write_named = |name: &str, value: u32| write(PCWSTR(windows::core::HSTRING::from(name).as_ptr()), value);
+    for (old, new) in [("overFullScreen", "showOverFullScreen"), ("maxPerformance", "performance"), ("opacity", "fallingOpacity")] {
+        if let Some(value) = read_named(old)
+            && read_named(new).is_none()
+        {
+            write_named(new, value);
+        }
+    }
+    // What fell was one of snow, leaves, petals, rain and hail, with rain mixed in apart.
+    if read_named("mode").is_none() && (read_named("rain").is_some() || read_named("petals").is_some()) {
+        let on = |name: &str| read_named(name).is_some_and(|v| v != 0);
+        let mode = if on("rain") {
+            Mode::Rain
+        } else if on("petals") {
+            Mode::Blossom
+        } else if on("autumn") {
+            Mode::Autumn
+        } else {
+            Mode::Snow
+        };
+        if on("mixRain") && mode != Mode::Rain {
+            write_named("mixed", 1);
+            write_named("mix0", modes::number(mode));
+            write_named("mix1", modes::number(Mode::Rain));
+            write_named("mode", modes::number(Mode::Rain));
+        } else {
+            write_named("mode", modes::number(mode));
+        }
+    }
+    crate::log!("settings of Snowpuff 1.3 carried over");
+}
+
+/// Every setting is also kept in `%APPDATA%\Snowpuff\settings.json`, which uninstalling leaves in place: Snowpuff
+/// installed again starts with what was chosen before.
+const FILE_NAMES: [&str; 42] = [
+    "intensity",
+    "settleGround",
+    "meltSnow",
+    "snowOnWindows",
+    "behindWindows",
+    "showOverFullScreen",
+    "behindTaskbar",
+    "showInScreenshots",
+    "settleSelection",
+    "settleWallpaper",
+    "wallpaperDepth",
+    "welcomed",
+    "halloweenOn",
+    "newYearOn",
+    "mode",
+    "mixed",
+    "mix0",
+    "mix1",
+    "performance",
+    "fallingOpacity",
+    "icicles",
+    "warmGlow",
+    "puff",
+    "quietOnCalls",
+    "ambience",
+    "ambienceVolume",
+    "soundEffects",
+    "autoUpdate",
+    "hotkeys",
+    "blizzard",
+    "fog",
+    "stars",
+    "garland",
+    "frost",
+    "creatures",
+    "words",
+    "liveWeather",
+    "hail",
+    "seenVersion",
+    "migrated14",
+    "installedAt",
+    "fightThrows",
+];
+
+fn settings_file() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|base| std::path::PathBuf::from(base).join("Snowpuff").join("settings.json"))
+}
+
+/// Writes the settings file from the registry, replacing it in one step.
+pub fn save_file() {
+    let Some(path) = settings_file() else { return };
+    let mut lines = Vec::new();
+    for name in FILE_NAMES {
+        if let Some(value) = read(PCWSTR(windows::core::HSTRING::from(name).as_ptr())) {
+            lines.push(format!("  \"{name}\": {value}"));
+        }
+    }
+    lines.push(format!("  \"openAtLogin\": {}", opens_at_login() as u32));
+    let text = format!("{{\n{}\n}}\n", lines.join(",\n"));
+    let result = (|| {
+        std::fs::create_dir_all(path.parent().ok_or_else(|| std::io::Error::other("no folder"))?)?;
+        let staged = path.with_extension("json.new");
+        std::fs::write(&staged, text)?;
+        std::fs::rename(&staged, &path)
+    })();
+    if let Err(error) = result {
+        crate::log!("settings file not saved: {error}");
+    }
+}
+
+/// Snowpuff installed again after being removed: the registry is empty but the settings file remains, and its
+/// settings come back, Open at Login with them.
+pub fn restore_after_reinstall() {
+    if read(w!("installedAt")).is_some() || read(w!("welcomed")).is_some() {
+        return;
+    }
+    let Some(text) = settings_file().and_then(|path| std::fs::read_to_string(path).ok()) else { return };
+    let body = text.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut login = None;
+    for pair in body.split(',') {
+        let Some((key, value)) = pair.split_once(':') else { continue };
+        let key = key.trim().trim_matches('"');
+        let Some(value) = (match value.trim() {
+            "true" => Some(1),
+            "false" => Some(0),
+            number => number.parse::<u32>().ok(),
+        }) else {
+            continue;
+        };
+        if key == "openAtLogin" {
+            login = Some(value != 0);
+        } else if !key.is_empty() {
+            write(PCWSTR(windows::core::HSTRING::from(key).as_ptr()), value);
+        }
+    }
+    if let Some(on) = login {
+        let status = set_opens_at_login(on);
+        crate::log!("open at login restored from the settings file: {on} ({status:?})");
+    }
+    crate::log!("settings restored from the settings file");
 }
 
 /// Keeps the snowballs thrown on their own: the menu's copy of the settings, saved whole, never hears of them.

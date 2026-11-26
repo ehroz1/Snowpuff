@@ -91,3 +91,34 @@
 "fight.hint" = "⌘+clique no papel de parede para atirar uma bola de neve";
 "fight.hint.ctrl" = "Ctrl+clique no papel de parede para atirar uma bola de neve";
 "fight.hint.snowman" = "Clique num boneco de neve para lhe atirar uma bola de neve";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "Granizo";
+"sp.weather" = "Tempo lá fora";
+"sp.magic" = "Magia";
+"sp.icicles" = "Pingentes de gelo";
+"sp.glow" = "Luz quente da janela";
+"sp.frost" = "Geada no vidro";
+"sp.garland" = "Guirlanda nas janelas";
+"sp.stars" = "Estrelas à noite";
+"sp.fog" = "Névoa";
+"sp.swirl" = "Redemoinho atrás do cursor";
+"sp.creatures" = "Gato e dom-fafe";
+"sp.puff" = "Soprar a neve";
+"sp.words" = "Digite “snow” para uma nevasca";
+"sp.hotkeys" = "Atalhos Ctrl+Alt";
+"sp.calls" = "Ocultar em chamadas";
+"sp.sound" = "Som";
+"sp.sound.off" = "Desligado";
+"sp.sound.wind" = "Vento";
+"sp.sound.fire" = "Lareira";
+"sp.sound.both" = "Vento e lareira";
+"sp.volume" = "Volume";
+"sp.effects" = "Efeitos sonoros";
+"sp.autoupdate" = "Instalar atualizações automaticamente";
+"sp.help" = "Como usar…";
+"sp.report" = "Relatar um problema…";
+"sp.mic" = "O Snowpuff não conseguiu abrir o microfone para ouvir você soprar. Permita em Configurações › Privacidade e segurança › Microfone.";
+"sp.updated" = "Snowpuff {version}: tudo do Snowhush 0.14";
+"sp.updated.text" = "Neve no papel de parede, guerras de bolas de neve com amigos, o modo Misturado e mais. O que é próprio do Snowpuff está em Ajustes › Magia e Som.";
+"sp.help.text" = "Segure Alt e mova o cursor perto de uma borda: desenhe na geada ou no vidro embaçado.\nClique num pingente de gelo: ele cai tilintando. Mexa o mouse rápido: um redemoinho de neve o segue.\nGuerra de bolas de neve no menu: convide um amigo com um link ou entre na sala dele.\nSacuda uma janela e os pingentes se quebram.\n\nCtrl+Alt+S — neve liga / desliga · Ctrl+Alt+M — próximo modo · Ctrl+Alt+C — varrer a neve\nCtrl+Alt+F — geada · Ctrl+Alt+G — guirlanda · Ctrl+Alt+H — esta ajuda";

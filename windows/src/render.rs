@@ -94,6 +94,10 @@ struct Uniforms {
     /// One while fallen leaves wither away.
     wilt: f32,
     padding: f32,
+    /// Snowpuff's warm glow from the focused window: its frame, left, bottom, right, top...
+    hearth: [f32; 4],
+    /// ...how far it spills sideways, how bright it is and how far it reaches below the window.
+    hearth_light: [f32; 4],
 }
 
 /// What the tree's shaders are given: see tree.hlsl.
@@ -157,14 +161,16 @@ pub struct Ambient {
     pub rim: [f32; 4],
     /// The cursor, in points, glowing like a candle in a jack-o'-lantern, and how brightly.
     pub lantern: (V2, f32),
+    /// Snowpuff's warm glow from the focused window: its frame, and how far and how brightly it spills.
+    pub hearth: ([f32; 4], [f32; 4]),
 }
 
 /// A sign's picture on the graphics card, and its size in points.
 type Picture = (ID3D11ShaderResourceView, [f32; 2]);
 
 pub struct Gpu {
-    device: ID3D11Device,
-    context: ID3D11DeviceContext,
+    pub(crate) device: ID3D11Device,
+    pub(crate) context: ID3D11DeviceContext,
     factory: IDXGIFactory2,
     composition: IDCompositionDevice,
     sprite_vertex: ID3D11VertexShader,
@@ -200,8 +206,8 @@ pub struct Gpu {
     sampler: ID3D11SamplerState,
     /// Clear past the picture's edges, for the pumpkins' glow around them.
     bordered: ID3D11SamplerState,
-    blend: ID3D11BlendState,
-    raster: ID3D11RasterizerState,
+    pub(crate) blend: ID3D11BlendState,
+    pub(crate) raster: ID3D11RasterizerState,
     /// The same, drawing only within the scissor rect: the glass, around the drops.
     scissored: ID3D11RasterizerState,
     uniforms: ID3D11Buffer,
@@ -671,7 +677,7 @@ impl Surface {
         }
     }
 
-    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, ambient: Ambient, time: f32) -> Result<()> {
+    pub fn draw(&mut self, gpu: &Gpu, simulation: &SnowSimulation, ambient: Ambient, time: f32, puff: Option<&mut crate::puff::Puff>) -> Result<()> {
         self.reserve(gpu, simulation.sprite_count(), simulation.column_count())?;
         let air = self.air(gpu, simulation)?;
         let glass = if simulation.has_glass_drops() {
@@ -741,6 +747,8 @@ impl Surface {
                 blossom: if simulation.blossom() { 1.0 } else { 0.0 },
                 wilt: if simulation.wilts() { 1.0 } else { 0.0 },
                 padding: 0.0,
+                hearth: ambient.hearth.0,
+                hearth_light: ambient.hearth.1,
             };
 
             // The pumpkins go down before the snow, so the drift they sit in covers their bottoms.
@@ -829,6 +837,23 @@ impl Surface {
                     // Unbound, it can be drawn into again next frame.
                     context.PSSetShaderResources(4, Some(&[None]));
                 }
+            }
+            // Snowpuff's own parts: icicles, the extras and frost on the glass, in front of the snow.
+            if let Some(puff) = puff {
+                let shake = simulation.shake();
+                puff.draw(
+                    gpu,
+                    crate::puff::Frame {
+                        view: [simulation.width(), simulation.height()],
+                        scale: self.width as f32 / simulation.width().max(1.0),
+                        time,
+                        light: [ambient.light[0], ambient.light[1], ambient.light[2], 1.0],
+                        lantern: [cursor.x, cursor.y, LANTERN_REACH, glow],
+                        hearth: ambient.hearth,
+                        opacity: simulation.falling_opacity,
+                        shake: [shake.x, shake.y],
+                    },
+                )?;
             }
             self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()
         }
@@ -1003,7 +1028,7 @@ fn compile_tree(entry: PCSTR, target: PCSTR) -> Result<Vec<u8>> {
     compile_from(TREE_SHADERS, s!("tree.hlsl"), entry, target)
 }
 
-fn compile_from(source: &str, name: PCSTR, entry: PCSTR, target: PCSTR) -> Result<Vec<u8>> {
+pub(crate) fn compile_from(source: &str, name: PCSTR, entry: PCSTR, target: PCSTR) -> Result<Vec<u8>> {
     let mut code = None;
     let mut errors = None;
     let result = unsafe {
@@ -1032,19 +1057,19 @@ fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
     unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) }
 }
 
-fn vertex_shader(device: &ID3D11Device, code: &[u8]) -> Result<ID3D11VertexShader> {
+pub(crate) fn vertex_shader(device: &ID3D11Device, code: &[u8]) -> Result<ID3D11VertexShader> {
     let mut shader = None;
     unsafe { device.CreateVertexShader(code, None, Some(&mut shader))? };
     shader.ok_or_else(Error::empty)
 }
 
-fn pixel_shader(device: &ID3D11Device, code: &[u8]) -> Result<ID3D11PixelShader> {
+pub(crate) fn pixel_shader(device: &ID3D11Device, code: &[u8]) -> Result<ID3D11PixelShader> {
     let mut shader = None;
     unsafe { device.CreatePixelShader(code, None, Some(&mut shader))? };
     shader.ok_or_else(Error::empty)
 }
 
-fn dynamic_buffer(device: &ID3D11Device, length: usize, bind: D3D11_BIND_FLAG) -> Result<ID3D11Buffer> {
+pub(crate) fn dynamic_buffer(device: &ID3D11Device, length: usize, bind: D3D11_BIND_FLAG) -> Result<ID3D11Buffer> {
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: length as u32,
         Usage: D3D11_USAGE_DYNAMIC,

@@ -30,6 +30,7 @@ use crate::light::{Backdrop, Sky, Wallpapers};
 use crate::log;
 use crate::picture::PictureSnow;
 use crate::prefs::Settings;
+use crate::puff::Puff;
 use crate::render::{Ambient, Gpu, LANTERN_REACH, Surface};
 use crate::tracker::{COVER_ONLY, Tracker, class_name, cloaked, local_frame, process_name};
 
@@ -252,6 +253,8 @@ pub struct Screen {
     lantern_at: V2,
     /// The snow lying in the display's wallpaper, while it is read for that or for its depth.
     pub picture: Option<PictureSnow>,
+    /// Snowpuff's own parts: the extras, the icicles, frost and the window's glow.
+    pub puff: Puff,
 }
 
 impl Screen {
@@ -294,6 +297,7 @@ impl Screen {
             behind_taskbar: settings.behind_taskbar,
             lantern_at: V2::new(-10_000.0, -10_000.0),
             picture: None,
+            puff: Puff::new(size.0 as f32, size.1 as f32),
         })
     }
 
@@ -323,16 +327,26 @@ impl Screen {
             self.follow(tracker, clock, now);
         }
         let cursor = self.cursor();
-        let changed = self.simulation.step(dt, cursor);
+        let mut changed = self.simulation.step(dt, cursor);
+        let inside = cursor.x >= 0.0 && cursor.y >= 0.0 && cursor.x <= self.simulation.width() && cursor.y <= self.simulation.height();
+        let (button, magic) = unsafe {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_LBUTTON, VK_MENU};
+            let down = |key: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| GetAsyncKeyState(key.0 as i32) as u16 & 0x8000 != 0;
+            (down(VK_LBUTTON), down(VK_MENU) && !down(VK_CONTROL))
+        };
+        let daylight = (sky.daylight.iter().copied().fold(0.0f32, f32::max) - 0.45).clamp(0.0, 0.5) / 0.5;
+        let (puffed, puff_smooth) = self.puff.step(dt, inside.then_some(cursor), button, magic, daylight, &mut self.simulation);
+        changed |= puffed;
         // Nothing to draw and nothing on its way: the frame shown last stays up, as it would, till the snow is stirred.
-        if !changed && self.simulation.is_empty() {
+        if !changed && self.simulation.is_empty() && self.puff.is_empty() {
             self.fade(gpu, dt, true);
             self.last_step = 0;
             self.next_due = now + clock.frequency;
             return Ok(false);
         }
         // The lantern follows the cursor even over snow that lies still, on the display it lights.
-        let lantern_moved = sky.night > 0.0 && (cursor - self.lantern_at).length() > 0.5 && (self.lit_by(cursor) || self.lit_by(self.lantern_at));
+        let lantern_moved =
+            sky.night > 0.0 && (cursor - self.lantern_at).length() > 0.5 && (self.lit_by(cursor) || self.lit_by(self.lantern_at)) || puff_smooth;
         self.lantern_at = cursor;
         let fading = self.fade(gpu, dt, false);
         if self.hidden() {
@@ -366,8 +380,8 @@ impl Screen {
         }
         // Halloween night: cold moonlight, violet shadows and a candle's glow along the drifts' edges.
         let (light, shadow_tint) = moonlit(sky.daylight, self.shadow_tint, sky.night);
-        let ambient = Ambient { light, shadow_tint, rim: [1.0, 0.56, 0.2, 0.3 * sky.night], lantern: (cursor, sky.night) };
-        self.surface.draw(gpu, &self.simulation, ambient, time)?;
+        let ambient = Ambient { light, shadow_tint, rim: [1.0, 0.56, 0.2, 0.3 * sky.night], lantern: (cursor, sky.night), hearth: self.puff.glow() };
+        self.surface.draw(gpu, &self.simulation, ambient, time, Some(&mut self.puff))?;
         Ok(true)
     }
 
@@ -407,6 +421,7 @@ impl Screen {
                     })
                     .collect();
                 self.simulation.update_windows(&surfaces, interval, &HashSet::new(), &elsewhere, false);
+                self.puff.set_windows(&surfaces, &self.simulation.covers, interval, &elsewhere, TASKBAR);
                 self.surfaces = surfaces;
                 self.windows_changed_at = now;
             }
@@ -444,6 +459,7 @@ impl Screen {
 
     pub fn drop_window_snow(&mut self) {
         self.simulation.update_windows(&[], 0.1, &HashSet::new(), &HashSet::new(), false);
+        self.puff.set_windows(&[], &[], 0.1, &HashSet::new(), TASKBAR);
         self.simulation.covers.clear();
         self.surfaces.clear();
         self.windows_seen = 0;

@@ -122,6 +122,7 @@ impl Extra {
         for (name, value) in NAMES.iter().zip(self.values()) {
             prefs::write(PCWSTR(HSTRING::from(*name).as_ptr()), value);
         }
+        prefs::save_file();
     }
 }
 
@@ -144,4 +145,27 @@ pub fn change(change: impl FnOnce(&mut Extra)) -> Extra {
 
 pub fn auto_update() -> bool {
     get().auto_update
+}
+
+/// The weather outside, while Weather Outside is on and it has been read.
+static OUTSIDE: Mutex<Option<crate::weather::Now>> = Mutex::new(None);
+
+pub fn outside() -> Option<crate::weather::Now> {
+    *OUTSIDE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn set_outside(now: Option<crate::weather::Now>) {
+    *OUTSIDE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
+}
+
+/// Breath heard from the microphone since the snow last took it.
+static BREATH: Mutex<f32> = Mutex::new(0.0);
+
+pub fn breathed(strength: f32) {
+    let mut breath = BREATH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *breath = breath.max(strength);
+}
+
+pub fn take_breath() -> f32 {
+    std::mem::take(&mut *BREATH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
 }

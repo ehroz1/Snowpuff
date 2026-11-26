@@ -5,8 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::geometry::{Rect, V2};
 use super::types::WindowId;
+use crate::geometry::{Rect, V2};
 
 /// One icicle as the graphics card draws it: where it hangs from, how long and wide, how far it is turned,
 /// a seed for its ripples and glint, and how opaque it is.
@@ -159,7 +159,8 @@ impl Icicles {
                     }
                 }
                 let width = frame.width;
-                let (outside, inside): (Vec<Hanging>, Vec<Hanging>) = eave.hanging.iter().partition(|icicle| icicle.x < 14.0 || icicle.x > width - 14.0);
+                let (outside, inside): (Vec<Hanging>, Vec<Hanging>) =
+                    eave.hanging.iter().partition(|icicle| icicle.x < 14.0 || icicle.x > width - 14.0);
                 for icicle in outside {
                     self.drop(icicle, frame, V2::ZERO);
                 }

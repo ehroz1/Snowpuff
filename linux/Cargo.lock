@@ -3921,7 +3921,7 @@ dependencies = [
 
 [[package]]
 name = "snowpuff"
-version = "0.14.0"
+version = "1.4.0"
 dependencies = [
  "ab_glyph",
  "calloop",

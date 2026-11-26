@@ -1,8 +1,11 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod audio;
+mod calls;
 mod clicks;
 mod desktop;
+mod extra;
 mod fight;
 mod fonts;
 mod halloween;
@@ -12,14 +15,15 @@ mod menu;
 mod new_year;
 mod picture;
 mod prefs;
+mod puff;
 mod render;
 mod screen;
 mod snow;
-mod extra;
 mod store;
 mod tracker;
 mod update;
 mod wallpaper;
+mod weather;
 mod welcome;
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};

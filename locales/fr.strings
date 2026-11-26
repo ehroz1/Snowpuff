@@ -91,3 +91,34 @@
 "fight.hint" = "⌘-clic sur le fond d’écran pour lancer une boule de neige";
 "fight.hint.ctrl" = "Ctrl-clic sur le fond d’écran pour lancer une boule de neige";
 "fight.hint.snowman" = "Clic sur un bonhomme de neige pour lui lancer une boule de neige";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "Grêle";
+"sp.weather" = "Météo dehors";
+"sp.magic" = "Magie";
+"sp.icicles" = "Stalactites de glace";
+"sp.glow" = "Lueur chaude de la fenêtre";
+"sp.frost" = "Givre sur la vitre";
+"sp.garland" = "Guirlande sur les fenêtres";
+"sp.stars" = "Étoiles la nuit";
+"sp.fog" = "Brouillard";
+"sp.swirl" = "Tourbillon derrière le curseur";
+"sp.creatures" = "Chat et bouvreuil";
+"sp.puff" = "Souffler sur la neige";
+"sp.words" = "Tapez « snow » pour une bourrasque";
+"sp.hotkeys" = "Raccourcis Ctrl+Alt";
+"sp.calls" = "Masquer pendant les appels";
+"sp.sound" = "Son";
+"sp.sound.off" = "Désactivé";
+"sp.sound.wind" = "Vent";
+"sp.sound.fire" = "Cheminée";
+"sp.sound.both" = "Vent et cheminée";
+"sp.volume" = "Volume";
+"sp.effects" = "Effets sonores";
+"sp.autoupdate" = "Installer les mises à jour automatiquement";
+"sp.help" = "Mode d’emploi…";
+"sp.report" = "Signaler un problème…";
+"sp.mic" = "Snowpuff n’a pas pu ouvrir le micro pour t’entendre souffler. Autorise-le dans Paramètres › Confidentialité et sécurité › Microphone.";
+"sp.updated" = "Snowpuff {version} : tout Snowhush 0.14";
+"sp.updated.text" = "De la neige dans ton fond d’écran, des batailles de boules de neige entre amis, le mode Mélangé et plus encore. Ce qui est propre à Snowpuff est dans Réglages › Magie et Son.";
+"sp.help.text" = "Maintiens Alt et déplace le curseur près d’un bord : dessine sur le givre ou la vitre embuée.\nClique sur une stalactite : elle tombe en tintant. Agite vite la souris : un tourbillon de neige la suit.\nBataille de boules de neige dans le menu : invite un ami par un lien ou rejoins le sien.\nSecoue une fenêtre et ses stalactites se brisent.\n\nCtrl+Alt+S — neige oui / non · Ctrl+Alt+M — mode suivant · Ctrl+Alt+C — balayer la neige\nCtrl+Alt+F — givre · Ctrl+Alt+G — guirlande · Ctrl+Alt+H — cette aide";

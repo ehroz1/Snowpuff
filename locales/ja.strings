@@ -91,3 +91,34 @@
 "fight.hint" = "壁紙を⌘クリックで雪玉を投げる";
 "fight.hint.ctrl" = "壁紙をCtrlクリックで雪玉を投げる";
 "fight.hint.snowman" = "雪だるまをクリックで雪玉を投げる";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "ひょう";
+"sp.weather" = "外の天気";
+"sp.magic" = "マジック";
+"sp.icicles" = "つらら";
+"sp.glow" = "窓のあたたかい光";
+"sp.frost" = "ガラスの霜";
+"sp.garland" = "窓のガーランド";
+"sp.stars" = "夜の星";
+"sp.fog" = "霧";
+"sp.swirl" = "カーソルの後ろの渦";
+"sp.creatures" = "ネコとウソ";
+"sp.puff" = "雪に息を吹きかける";
+"sp.words" = "「snow」と打つと吹雪";
+"sp.hotkeys" = "ショートカット Ctrl+Alt";
+"sp.calls" = "通話中は隠す";
+"sp.sound" = "サウンド";
+"sp.sound.off" = "オフ";
+"sp.sound.wind" = "風";
+"sp.sound.fire" = "暖炉";
+"sp.sound.both" = "風と暖炉";
+"sp.volume" = "音量";
+"sp.effects" = "効果音";
+"sp.autoupdate" = "アップデートを自動でインストール";
+"sp.help" = "使い方…";
+"sp.report" = "問題を報告…";
+"sp.mic" = "息を聞くためのマイクを開けませんでした。設定 › プライバシーとセキュリティ › マイク で許可してください。";
+"sp.updated" = "Snowpuff {version}：Snowhush 0.14 のすべて";
+"sp.updated.text" = "壁紙に積もる雪、友だちとの雪合戦、ミックスモードなど。Snowpuff 独自の機能は 設定 › マジック と サウンド にあります。";
+"sp.help.text" = "Alt を押したまま画面の端でカーソルを動かすと、霜や曇ったガラスに絵が描けます。\nつららをクリックすると音を立てて落ちます。マウスを素早く振ると雪の渦がついてきます。\nメニューの雪合戦：リンクで友だちを招待するか、相手のルームに参加します。\nウインドウを揺らすと、つららが折れます。\n\nCtrl+Alt+S — 雪のオン / オフ · Ctrl+Alt+M — 次のモード · Ctrl+Alt+C — 雪を払う\nCtrl+Alt+F — 霜 · Ctrl+Alt+G — ガーランド · Ctrl+Alt+H — このヘルプ";

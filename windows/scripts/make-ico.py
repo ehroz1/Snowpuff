@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 
 SIZES = [16, 20, 24, 32, 40, 48, 64, 256]
-SOURCE = "../site/assets/icon-512.png"
+SOURCE = "../Assets/icon/png/snowpuff-square-512.png"
 TARGET = "assets/Snowpuff.ico"
 
 images = []

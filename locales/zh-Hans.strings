@@ -91,3 +91,34 @@
 "fight.hint" = "⌘+点按墙纸来扔雪球";
 "fight.hint.ctrl" = "Ctrl+点按墙纸来扔雪球";
 "fight.hint.snowman" = "点按雪人来向他扔雪球";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "冰雹";
+"sp.weather" = "窗外天气";
+"sp.magic" = "魔法";
+"sp.icicles" = "冰柱";
+"sp.glow" = "窗户暖光";
+"sp.frost" = "玻璃上的霜花";
+"sp.garland" = "窗上的彩灯";
+"sp.stars" = "夜晚的星星";
+"sp.fog" = "雾";
+"sp.swirl" = "光标后的旋风";
+"sp.creatures" = "猫和红腹灰雀";
+"sp.puff" = "向雪吹气";
+"sp.words" = "输入“snow”下大雪";
+"sp.hotkeys" = "快捷键 Ctrl+Alt";
+"sp.calls" = "通话时隐藏";
+"sp.sound" = "声音";
+"sp.sound.off" = "关";
+"sp.sound.wind" = "风";
+"sp.sound.fire" = "壁炉";
+"sp.sound.both" = "风和壁炉";
+"sp.volume" = "音量";
+"sp.effects" = "音效";
+"sp.autoupdate" = "自动安装更新";
+"sp.help" = "使用方法…";
+"sp.report" = "报告问题…";
+"sp.mic" = "Snowpuff 无法打开麦克风来听你吹气。请在 设置 › 隐私和安全性 › 麦克风 中允许。";
+"sp.updated" = "Snowpuff {version}：包含 Snowhush 0.14 的全部内容";
+"sp.updated.text" = "雪落进壁纸、和朋友打雪仗、混合模式等。Snowpuff 自己的功能在 设置 › 魔法 和 声音 中。";
+"sp.help.text" = "按住 Alt 在屏幕边缘移动光标：在霜花或起雾的玻璃上作画。\n点击冰柱：它叮当落下。快速甩动鼠标：一阵雪的旋风跟着它。\n菜单里的打雪仗：用链接邀请朋友，或加入他的房间。\n摇晃窗口，冰柱就会折断。\n\nCtrl+Alt+S — 开 / 关雪 · Ctrl+Alt+M — 下一个模式 · Ctrl+Alt+C — 扫掉积雪\nCtrl+Alt+F — 霜花 · Ctrl+Alt+G — 彩灯 · Ctrl+Alt+H — 本帮助";

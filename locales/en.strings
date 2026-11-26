@@ -99,3 +99,34 @@
 "fight.hint" = "⌘-click the wallpaper to throw a snowball";
 "fight.hint.ctrl" = "Ctrl-click the wallpaper to throw a snowball";
 "fight.hint.snowman" = "Click a snowman to throw a snowball at him";
+
+/* Snowpuff's own: the Windows menu and notes. */
+"sp.hail" = "Hail";
+"sp.weather" = "Weather Outside";
+"sp.magic" = "Magic";
+"sp.icicles" = "Icicles";
+"sp.glow" = "Warm Window Glow";
+"sp.frost" = "Frost on the Glass";
+"sp.garland" = "Garland on Windows";
+"sp.stars" = "Stars at Night";
+"sp.fog" = "Fog";
+"sp.swirl" = "Swirl Behind the Cursor";
+"sp.creatures" = "Cat and Bullfinch";
+"sp.puff" = "Blow on the Snow";
+"sp.words" = "Type “snow” for a Flurry";
+"sp.hotkeys" = "Shortcuts Ctrl+Alt";
+"sp.calls" = "Hide During Calls";
+"sp.sound" = "Sound";
+"sp.sound.off" = "Off";
+"sp.sound.wind" = "Wind";
+"sp.sound.fire" = "Fireplace";
+"sp.sound.both" = "Wind and Fireplace";
+"sp.volume" = "Volume";
+"sp.effects" = "Sound Effects";
+"sp.autoupdate" = "Install Updates Automatically";
+"sp.help" = "How to Use…";
+"sp.report" = "Report a Problem…";
+"sp.mic" = "Snowpuff couldn't open the microphone to hear you blow. Allow it in Settings › Privacy & security › Microphone.";
+"sp.updated" = "Snowpuff {version}: everything from Snowhush 0.14";
+"sp.updated.text" = "Snow in your wallpaper, snowball fights with friends, Mixed mode and more. Snowpuff's own are in Settings › Magic and Sound.";
+"sp.help.text" = "Hold Alt and move the cursor near an edge: draw on the frost or misted glass.\nClick an icicle: it falls with a ring. Flick the mouse fast: a swirl of snow follows it.\nSnowball Fight in the menu: invite a friend with a link, or join theirs.\nShake a window and its icicles break.\n\nCtrl+Alt+S — snow on / off · Ctrl+Alt+M — the next mode · Ctrl+Alt+C — clear the snow\nCtrl+Alt+F — frost · Ctrl+Alt+G — garland · Ctrl+Alt+H — this help";

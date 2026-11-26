@@ -3364,6 +3364,7 @@ dependencies = [
  "snowpuff-depth",
  "snowpuff-net",
  "windows",
+ "windows-future",
  "windows-numerics",
 ]
 

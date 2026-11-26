@@ -6,10 +6,10 @@
 use std::sync::Mutex;
 
 use super::extras::{Extras, Input, Settings, Weather};
-use crate::geometry::{Rect, V2};
-use super::types::RainWindow;
 use super::sfx::{Cue, Sfx};
+use super::types::RainWindow;
 use super::types::Sprite;
+use crate::geometry::{Rect, V2};
 
 #[repr(C)]
 pub struct SPInput {
@@ -132,7 +132,12 @@ pub unsafe extern "C" fn sp_extras_windows(extras: *mut Extras, windows: *const 
         .map(|w| {
             let start = (w.fronts_offset as usize).min(fronts.len());
             let end = (start + w.fronts_count as usize).min(fronts.len());
-            RainWindow { id: w.id as isize, frame: rect(&w.frame), fronts: fronts[start..end].iter().map(rect).collect(), ledge_only: w.ledge_only != 0 }
+            RainWindow {
+                id: w.id as isize,
+                frame: rect(&w.frame),
+                fronts: fronts[start..end].iter().map(rect).collect(),
+                ledge_only: w.ledge_only != 0,
+            }
         })
         .collect();
     unsafe { &mut *extras }.set_windows(&list);
@@ -501,8 +506,12 @@ pub unsafe extern "C" fn sp_icicles_write(
             unsafe { *occluders.add(occluder_count + k) = *occluder };
         }
         unsafe {
-            *groups.add(group_count) =
-                SPIcicleGroup { offset: group.offset as u32, count: group.count as u32, occluders_offset: occluder_count as u32, occluders_count: take as u32 }
+            *groups.add(group_count) = SPIcicleGroup {
+                offset: group.offset as u32,
+                count: group.count as u32,
+                occluders_offset: occluder_count as u32,
+                occluders_count: take as u32,
+            }
         };
         occluder_count += take;
         group_count += 1;

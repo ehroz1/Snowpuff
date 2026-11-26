@@ -1,87 +1,121 @@
-<p align="center">
-  <a href="https://snowpuff.ehroz.pro"><img src="site/assets/icon-512.png" width="128" height="128" alt="Snowpuff icon"></a>
-</p>
+<p align="center"><img src="docs/icon.png" width="128" alt="Snowpuff"></p>
 
 <h1 align="center">Snowpuff</h1>
-
-<p align="center">It's snowing on your desktop.</p>
+<p align="center">Тёплый снег на рабочем столе macOS, Windows и Linux.<br>Падает, оседает на окнах и в обоях, растит сосульки и разлетается от курсора.</p>
 
 <p align="center">
-  <a href="https://github.com/ehroz1/Snowpuff/releases/latest/download/Snowpuff.dmg"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/macos-dark.svg"><img src=".github/readme/macos-light.svg" width="20" height="16" align="absmiddle" alt=""></picture><b>Download for macOS</b></a>
-  &nbsp;·&nbsp;
-  <a href="https://apps.microsoft.com/detail/9P00NQMGBKGP"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/windows-dark.svg"><img src=".github/readme/windows-light.svg" width="20" height="16" align="absmiddle" alt=""></picture><b>Download for Windows</b></a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/ehroz1/Snowpuff/releases/latest/download/Snowpuff-x86_64.AppImage"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/linux-dark.svg"><img src=".github/readme/linux-light.svg" width="20" height="16" align="absmiddle" alt=""></picture><b>Download for Linux</b></a>
-  &nbsp;·&nbsp;
-  <a href="https://snowpuff.ehroz.pro"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/link-dark.svg"><img src=".github/readme/link-light.svg" width="20" height="16" align="absmiddle" alt=""></picture>snowpuff.ehroz.pro</a>
-  <br>
-  <sub>macOS 14 or later · Windows 10 or 11 · Linux with KDE Plasma 6, Hyprland, Sway or niri · free, source available</sub>
+  <a href="https://github.com/ehroz1/Snowpuff/releases/latest"><b>Скачать</b></a> ·
+  <a href="https://snowpuff.ehroz.pro">Сайт</a> ·
+  <a href="https://ehroz.pro">Другие приложения — ehroz.pro</a> ·
+  <a href="https://t.me/hhrrzz1">Поддержать автора ♥</a>
 </p>
 
-https://github.com/user-attachments/assets/291c3cd5-3563-4b86-8b66-dfd924f980fc
+<p align="center"><img src="docs/site.jpg" width="720" alt="Snowpuff: окно с котом и лампой, снег ложится на подоконник и в сугроб"></p>
 
-A tiny app that lives in the menu bar on macOS and in the tray on Windows and Linux. Soft snow drifts across your screen, settles along the tops of your windows and slips off when you drag them. Sweep the drift aside with your cursor.
+## Как это работает
 
-## What the snow does
+1. Снег идёт поверх всех окон и не мешает работать: клики проходят сквозь него.
+2. Он оседает на верхних краях окон, на Dock и панели задач, на виджетах, на рамке выделения и внизу экрана, повторяя
+   скруглённые углы. С включёнными «Обоями» снег ложится и на то, что нарисовано на обоях: на крыши, ветки, склоны.
+3. Проведите курсором по сугробу — снег расступится. Дёрните окно — снег соскользнёт, а сосульки под ним оборвутся.
+   Закройте или сверните окно — снег упадёт в сугроб ниже. Перетащите окно на другой монитор — снег поедет с ним.
 
-- **Falls.** Every flake keeps its own pace and sways in a slow breeze.
-- **Settles.** It piles up and slumps to a natural slope along the bottom of the screen, on any window with room above it, and on the Dock.
-- **Falls into your wallpaper.** With Deep Interaction on, it reads the depth of your wallpaper once and snows inside the picture: far flakes pass behind nearer mountains and trees and take the picture's light, and snow gathers on its slopes, ridges and boughs with a thickness of its own, glowing under a sunset, grey at dusk. It comes on over minutes, lies deeper over an hour unless Melt Snow holds it, and is still there next time; change the wallpaper and it starts over on the new one. Windows hide it, as they hide the wallpaper, and it costs nothing while it lies still.
-- **Moves.** Push the cursor through a drift and it parts and sprays. Drag or shake a window and its snow slides off and lands below.
-- **Drops.** Close or minimize a window and its snow drops at once, in lumps that burst into powder where they land.
-- **Melts.** With Melt Snow on, the drift thaws slowly, so it never takes over your screen.
-- **Hides.** Screenshots and screen sharing show your desktop without it, unless you turn on Show in Screenshots.
-- **Rests.** About 6% of one processor core and 65 MB of memory, and less on battery or in Low Power Mode. It pauses while your screen sleeps, locks or is covered.
+| Режим | Что падает |
+|---|---|
+| **Снег** | от лёгкого до метели; на Новый год — ёлка и салют, на Хеллоуин — тыквы и привидения |
+| **Осенние листья** | дуб, клён и осина, нарисованные по фотографиям; ложатся кучами и вянут |
+| **Дождь** | бьётся о верх окон, стекает каплями по стеклу, висит на нижнем краю |
+| **Цветение сакуры** | лепестки и иногда целые цветки; светятся на просвет и буреют по краям |
+| **Град** | градины отскакивают от окон и низа экрана |
+| **Смешанный** | два вида сразу: снег с листьями, дождь с лепестками и так далее |
 
-## Autumn Leaves
+«Погода за окном» включает снег, дождь или град, как сейчас у вас на улице (Open-Meteo, место округляется до ~10 км).
 
-Choose Mode › Autumn Leaves and leaves fall instead of snow. They turn and swing on the way down, settle in heaps you can see are made of leaves, scatter under the cursor and come off a window you shake or drag. Melt Snow and Clear Snow become Wither Leaves and Clear Leaves.
+## Что умеет
 
-## Rain
+- **Снег в обоях**: небольшая нейросеть один раз читает глубину картинки на рабочем столе, дальние снежинки падают за
+  ближние предметы, а снег копится на том, что в обоях выше и ровнее.
+- **Снежки с друзьями**: «Снежки» в меню — позовите друга ссылкой или зайдите по его ссылке и бросайте снежки
+  в снеговиков на обоях. Соединение идёт напрямую между игроками (iroh), без своего сервера.
+- **Сосульки** растут под окнами со снегом. Клик по сосульке сбивает её со звоном.
+- **Тёплый свет окна**: активное окно светится, и снег рядом теплеет.
+- **Морозные узоры** растут с краёв экрана, в дождь стекло запотевает. Зажмите ⌥ (Alt на Windows) и рисуйте по ним.
+- **Живность и ночь**: из сугроба выглядывает кот, на окна садится снегирь; ночью звёзды и метеоры, туман по низу,
+  гирлянда на окнах, вихрь за быстрым курсором.
+- **Звук**: ветер, камин или оба сразу, шум дождя и града, хруст снега, звон сосулек — всё синтезируется на лету.
+- **Подуть на снег**: включите микрофон и подуйте — снег разлетится. Звук не записывается и никуда не отправляется.
+- **Не мешает**: на созвонах снег и звук плавно исчезают, над фильмом или игрой во весь экран — тоже. На скриншотах
+  его нет, если не попросить. На батарее рисует реже, пока экран спит — стоит.
+- **Слово «снег»**: наберите «снег» или «snow» где угодно — пойдёт густой снегопад (включается в настройках).
+- Меню на девяти языках, по языку системы.
 
-Choose Mode › Rain and rain beats down instead of snow, splashing where it lands. On the tops of your windows, the Dock and the taskbar it spatters the glass with spray and sets drops running down it like beads of water on a window: they catch on specks, gather the spray they meet and lurch on, leaving a wet film and a trail of droplets. Others hang under bottom edges until they grow heavy enough to let go. Drag the cursor through them to smear them, or shake or drag a window to throw them off. Rain doesn't pile up, so Melt Snow and Clear Snow step aside, and so does Ground under Accumulate: rain always splashes along the bottom.
+## Как пользоваться
 
-## Cherry Blossom
+| Что сделать | Как |
+|---|---|
+| Рисовать по инею или запотевшему стеклу | Зажмите ⌥/Alt и ведите курсором у края экрана |
+| Сбить сосульку | Кликните по ней |
+| Метель за курсором | Быстро махните мышью |
+| Бросить снежок в игре | ⌘-клик по обоям на Mac, Ctrl-клик на Windows и Linux |
 
-Choose Mode › Cherry Blossom and pink petals fall instead of snow. Curved like a spoon, they glint as they tumble and glow where the light comes through them, and now and then a whole flower on its stalk spins down. They heap up and scatter just as leaves do, and with Wilt Petals on, the fallen ones brown from their edges before they go. Melt Snow and Clear Snow become Wilt Petals and Clear Petals.
+**Горячие клавиши** работают в любой программе — ⌃⌥+буква на Mac, Ctrl+Alt+буква на Windows:
 
-## Snowball Fight
+| Клавиша | Что делает |
+|---|---|
+| S | снег вкл / выкл |
+| M | следующий режим |
+| C | смести весь снег |
+| F | морозные узоры вкл / выкл |
+| G | гирлянда на окнах вкл / выкл |
+| H | подсказка «Как пользоваться» |
 
-With Deep Interaction on, snowmen walk your wallpaper, small in the distance and large up close, hidden behind whatever in the picture is nearer. Throw snowballs at them with ⌘-click on the Mac, Ctrl-click on Windows, or a click on a snowman on Linux; hit one and he throws one back out of the picture at your screen. Choose Snowball Fight › Invite Friends and the link to a room goes to your clipboard: a friend who opens it, or picks Join from Clipboard with it copied, appears as a snowman in your wallpaper, and you in theirs. Everyone has five hearts, and the last one standing wins the round. Players connect to each other directly where they can and through a relay where they can't; only names and throws travel, nothing about your desktop.
+## Установка
 
-## New Year
+**macOS 14+** (Apple Silicon и Intel): скачайте `Snowpuff.dmg`, откройте и запустите Snowpuff — он сам переедет в
+«Программы». Приложение не подписано сертификатом Apple, поэтому при первом запуске откройте
+«Системные настройки → Конфиденциальность и безопасность» и нажмите «Всё равно открыть». Это нужно один раз.
 
-From December 20 until January 8 a decorated fir stands in the snow at the left of the screen. Its boughs sway in the wind and bend under the cursor, catch the falling snow and shake it off; presents lie under it, and a hand reaches out of one when the cursor comes near. Fireworks rise far off in the wallpaper's sky through the season, more and more toward the New Year, and at midnight on New Year's Eve the garland counts down the last ten seconds and every hand comes out with a sparkler. Choose Mode › New Year to have it any other day, as long as snow is falling.
+**Windows 10/11**: скачайте и запустите `Snowpuff-Setup.exe`. Права администратора не нужны. Если SmartScreen
+предупредит о неизвестном издателе, нажмите «Подробнее → Выполнить в любом случае».
 
-## Halloween
+**Linux** (KDE Plasma 6, Hyprland, Sway и niri на Wayland): `Snowpuff-x86_64.AppImage`, `.deb` или `.rpm` из
+последнего релиза.
 
-From October 30 until dawn on November 1 the snow turns spooky: jack-o'-lanterns glow in the drift and ghosts pop up out of it with signs. Choose Mode › Halloween to have it any other day, as long as snow is falling.
+## Настройки и обновления
 
-Everything else lives in the menu bar: an Intensity slider for how much falls, Opacity for how see-through it is, a row showing its value that folds out a slider (on Linux and in the plain Windows menu, both are submenus of steps), Accumulate, which folds out a row of icons for what the snow settles on (the wallpaper, the ground, the Dock, windows, desktop widgets and a selection dragged across the desktop on the Mac; the wallpaper, the ground, windows and a selection on Windows; the wallpaper, the ground, a floating panel and windows on Linux, as a submenu), Mode (Snow, Autumn Leaves, Rain, Cherry Blossom, and Halloween or New Year on top of snow), Snowball Fight and Clear Snow, with the rest under Settings: Melt Snow, Deep Interaction (the snow falls into the wallpaper's depth and snowmen walk it), Behind Windows, Show over Full Screen, Show in Screenshots, Max Performance (draws every frame at the display's full rate) and Open at Login. On Windows and the Mac, Settings stays open while you switch its options. On Windows, Behind Taskbar lets the snow settle at the bottom of the screen under a see-through taskbar, such as one made clear with TranslucentTB.
+Всё — в меню значка (в строке меню на Mac, в трее на Windows): интенсивность и непрозрачность, «Накопление»
+(где оседает снег), режимы, «Снежки», а в «Настройках» — поведение, отображение, «Волшебство» и «Звук».
 
-## Building
+Настройки хранятся ещё и в отдельном файле, который **остаётся после удаления приложения**: установите Snowpuff снова —
+и он подхватит всё, что было выбрано.
 
-```sh
-./build.sh            # build/Snowpuff.app, signed ad hoc
-open build/Snowpuff.app
-windows/build.sh      # dist/Snowpuff-Setup.exe, cross-compiled from macOS
-```
+| Система | Файл настроек |
+|---|---|
+| macOS | `~/Library/Application Support/Snowpuff/settings.json` («Настройки → Показать файл настроек») |
+| Windows | `%APPDATA%\Snowpuff\settings.json` |
 
-### Linux
+Mac и Windows сами проверяют [последний релиз](https://github.com/ehroz1/Snowpuff/releases/latest), скачивают новую
+версию, сверяют её SHA-256 с тем, что сообщает GitHub, и ставят её. Выключается в «Настройки → Обновляться автоматически».
 
-`linux/` is a native version for Wayland: KDE Plasma 6, Hyprland, Sway and niri. It shares the snow's physics with the Windows version and draws with OpenGL ES in a layer-shell overlay. Wayland doesn't tell apps where other windows are or where the pointer is, so each compositor is asked in its own way: on KDE, Snowpuff loads a small KWin script (`linux/src/snowpuff.js`) while it runs, which reports both; Hyprland answers over its IPC socket, which tells both too; Sway and niri answer over theirs, though they don't tell where the pointer is, and niri only where floating windows are, so on niri only those collect snow.
+## Сборка
 
-Each release carries an AppImage that runs on any distribution, a `.deb` and an `.rpm`. On Arch, `makepkg -si` in `linux/packaging/aur` installs the release's build as a package. To build it yourself:
+- Mac: `./build.sh` (нужны Rust и Swift; `./build.sh install` — поставить и запустить).
+- Windows: `cargo build --release --bin Snowpuff --manifest-path windows/Cargo.toml` на Windows.
+- Linux: `cargo build --release --manifest-path linux/Cargo.toml` (нужен `libwayland-dev`).
+- Выпуск: `./release.sh 1.4.0 "Что изменилось"` — GitHub Actions соберёт и опубликует релиз.
 
-```sh
-cd linux && cargo build --release   # linux/target/release/snowpuff
-cd linux/packaging && makepkg -si   # Arch: builds and installs it with its icon and menu entry
-```
+## Лицензия и благодарности
 
-`linux/bench/run.sh sway|niri|kwin` tries it in a compositor inside a container, without a display.
+Snowpuff основан на [Snowhush](https://github.com/mbezruchko/Snowhush) © 2026 Mykhailo Bezruchko. С версии 1.4 в него
+вошло всё из Snowhush 0.14, а там, где одна и та же возможность была в обоих, оставлен вариант Snowhush. Поэтому
+Snowpuff, как и Snowhush, распространяется под некоммерческой лицензией
+[PolyForm Noncommercial 1.0.0](LICENSE): им можно пользоваться, делиться и менять его, но не продавать и не строить на
+нём платные приложения. Версии Snowpuff до 1.3.2 включительно остаются под MIT.
 
-Everything lives in the tray, as on Windows. Settings go to `~/.config/snowpuff/settings`, Open at Login to `~/.config/autostart/snowpuff.desktop`, the log to `~/.local/state/snowpuff/snowpuff.log`.
+Своё у Snowpuff: сосульки, тёплый свет окна, морозные узоры, гирлянда, звёзды, туман, кот и снегирь, град,
+«Погода за окном», звуки, «Подуть на снег», «Прятать на созвонах», горячие клавиши, файл настроек и обновления
+с GitHub.
 
-## License
+Нейросеть глубины — Depth Anything V2 Small (Apache-2.0); остальные сторонние лицензии — в `Resources/ThirdParty`.
 
-[PolyForm Noncommercial 1.0.0](LICENSE): use, share and change Snowpuff freely, keeping its copyright notice with it. Selling it, or anything built on its code, isn't allowed. Versions up to 0.6.1 were released under the MIT License.
+Сделано [ehroz.pro](https://ehroz.pro).

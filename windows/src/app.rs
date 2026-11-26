@@ -241,6 +241,7 @@ pub fn run(link: Option<String>) -> Result<()> {
         let window = CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("Snowpuff"), WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None)?;
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
 
+        prefs::restore_after_reinstall();
         let settings = Settings::load();
         let (commands, receiver) = mpsc::channel();
         let wake = CreateEventW(None, false, false, None)?;
@@ -264,6 +265,7 @@ pub fn run(link: Option<String>) -> Result<()> {
         if let Some(link) = link {
             APP.with_borrow(|app| app.as_ref().map(|app| send(app, Command::FightLink(link))));
         }
+        start_snowpuff(window);
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
@@ -275,6 +277,9 @@ pub fn run(link: Option<String>) -> Result<()> {
 }
 
 unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if let Some(handled) = snowpuff_message(window, message, wparam, lparam) {
+        return handled;
+    }
     match message {
         WM_TRAY => {
             let event = (lparam.0 & 0xffff) as u32;
@@ -455,6 +460,9 @@ fn entries(settings: &Settings, login: bool, sliders: bool) -> Vec<Entry> {
         });
         behavior.push(Entry::toggle(ID_MELT, melt, settings.melt, settings.accumulates()));
     }
+    let (snowpuff_modes, snowpuff_options, snowpuff_end) = snowpuff_entries(sliders);
+    let mut modes = modes;
+    modes.extend(snowpuff_modes);
     let mut options = behavior;
     options.extend([
         Entry::toggle(ID_DEEP, tr("deep"), settings.depth, true),
@@ -472,6 +480,7 @@ fn entries(settings: &Settings, login: bool, sliders: bool) -> Vec<Entry> {
     if !store::packaged() {
         options.push(Entry::item(ID_UPDATES, tr("updates"), false, true));
     }
+    options.extend(snowpuff_options);
     let mut entries = if sliders {
         vec![
             Entry::header(tr("intensity")),
@@ -520,12 +529,9 @@ fn entries(settings: &Settings, login: bool, sliders: bool) -> Vec<Entry> {
     if !heaps.is_empty() {
         entries.push(Entry::item(ID_CLEAR, text::kinds("clear", &heaps), false, true));
     }
-    entries.extend([
-        Entry::Separator,
-        Entry::Submenu { label: tr("settings").to_string(), entries: options, shimmer: false },
-        Entry::loved(ID_SPONSOR, tr("support")),
-        Entry::item(ID_QUIT, tr("quit"), false, true),
-    ]);
+    entries.extend([Entry::Separator, Entry::Submenu { label: tr("settings").to_string(), entries: options, shimmer: false }]);
+    entries.extend(snowpuff_end);
+    entries.extend([Entry::loved(ID_SPONSOR, tr("support")), Entry::item(ID_QUIT, tr("quit"), false, true)]);
     entries
 }
 
@@ -609,6 +615,9 @@ unsafe fn append(menu: HMENU, entries: &[Entry]) {
 }
 
 fn choose(window: HWND, chosen: u32, login: bool) {
+    if choose_snowpuff(window, chosen) {
+        return;
+    }
     match chosen {
         0 => {}
         ID_QUIT => quit(window),
@@ -936,4 +945,333 @@ fn remove_tray_icon(window: HWND) {
     unsafe {
         let _ = Shell_NotifyIconW(NIM_DELETE, &data);
     }
+}
+
+// MARK: - Snowpuff
+
+const TIMER_WORDS: usize = 40;
+const TIMER_OUTSIDE: usize = 41;
+const ID_SP_HAIL: u32 = 500;
+const ID_SP_WEATHER: u32 = 501;
+const ID_SP_ICICLES: u32 = 502;
+const ID_SP_GLOW: u32 = 503;
+const ID_SP_FROST: u32 = 504;
+const ID_SP_GARLAND: u32 = 505;
+const ID_SP_STARS: u32 = 506;
+const ID_SP_FOG: u32 = 507;
+const ID_SP_SWIRL: u32 = 508;
+const ID_SP_CREATURES: u32 = 509;
+const ID_SP_PUFF: u32 = 510;
+const ID_SP_WORDS: u32 = 511;
+const ID_SP_HOTKEYS: u32 = 512;
+const ID_SP_CALLS: u32 = 513;
+const ID_SP_EFFECTS: u32 = 514;
+const ID_SP_AUTO_UPDATE: u32 = 515;
+const ID_SP_HELP: u32 = 516;
+const ID_SP_REPORT: u32 = 517;
+const ID_SP_SOUND: u32 = 520;
+const ID_SP_VOLUME: u32 = 530;
+const VOLUMES: [u32; 4] = [25, 50, 75, 100];
+
+/// Ctrl+Alt and a letter, anywhere: snow on and off, the next mode, clear, frost, the garland, How to Use.
+const HOTKEYS: [(i32, u16); 6] = [(1, b'S' as u16), (2, b'M' as u16), (5, b'C' as u16), (6, b'F' as u16), (7, b'G' as u16), (8, b'H' as u16)];
+
+#[derive(Default)]
+struct Magic {
+    ear: Option<crate::audio::Ear>,
+    keys_down: u8,
+    typed: Vec<(u8, u32)>,
+    intensity_before: Option<u32>,
+}
+
+thread_local! {
+    static MAGIC: RefCell<Magic> = RefCell::new(Magic::default());
+}
+
+/// Starts Snowpuff's own parts once the tray icon is up.
+fn start_snowpuff(window: HWND) {
+    let extra = crate::extra::get();
+    if extra.puff {
+        listen(window);
+    }
+    if extra.hotkeys {
+        register_hotkeys(window);
+    }
+    if extra.words {
+        unsafe { SetTimer(Some(window), TIMER_WORDS, 60, None) };
+    }
+    if extra.live_weather {
+        crate::weather::look_outside(window);
+        unsafe { SetTimer(Some(window), TIMER_OUTSIDE, 30 * 60 * 1000, None) };
+    }
+    // Once after an update, a word on what is new; a first run gets the welcome instead.
+    let version = version_number(env!("CARGO_PKG_VERSION"));
+    if extra.seen_version != version {
+        crate::extra::change(|extra| extra.seen_version = version);
+        if APP.with_borrow(|app| app.as_ref().is_some_and(|app| app.settings.welcomed)) {
+            notify(window, &text::fill("sp.updated", &[("version", env!("CARGO_PKG_VERSION"))]), tr("sp.updated.text"));
+        }
+    }
+}
+
+/// A version as one number: 1.4.0 is 10400.
+fn version_number(version: &str) -> u32 {
+    version.split('.').take(3).map(|part| part.parse::<u32>().unwrap_or(0)).fold(0, |n, part| n * 100 + part)
+}
+
+fn listen(window: HWND) {
+    let target = window.0 as isize;
+    let ear = crate::audio::Ear::start(crate::extra::breathed, move || {
+        crate::extra::change(|extra| extra.puff = false);
+        unsafe {
+            let _ = PostMessageW(Some(HWND(target as _)), WM_MIC_FAILED, WPARAM(0), LPARAM(0));
+        }
+    });
+    MAGIC.with_borrow_mut(|magic| magic.ear = Some(ear));
+}
+
+const WM_MIC_FAILED: u32 = WM_APP + 6;
+
+fn register_hotkeys(window: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey};
+    for (id, key) in HOTKEYS {
+        // Another app may hold the same keys; Snowpuff's others still work.
+        if let Err(error) = unsafe { RegisterHotKey(Some(window), id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, key as u32) } {
+            log!("hotkey Ctrl+Alt+{} taken: {error}", key as u8 as char);
+        }
+    }
+}
+
+fn unregister_hotkeys(window: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+    for (id, _) in HOTKEYS {
+        unsafe {
+            let _ = UnregisterHotKey(Some(window), id);
+        }
+    }
+}
+
+fn hotkey(window: HWND, id: i32) {
+    let login = prefs::opens_at_login();
+    match id {
+        1 => {
+            APP.with_borrow_mut(|app| {
+                let Some(app) = app else { return };
+                let next = if app.settings.intensity == 0 {
+                    MAGIC.with_borrow_mut(|magic| magic.intensity_before.take()).unwrap_or(50)
+                } else {
+                    MAGIC.with_borrow_mut(|magic| magic.intensity_before = Some(app.settings.intensity));
+                    0
+                };
+                app.settings.intensity = next;
+                app.settings.save();
+                send(app, Command::Intensity(next as f32 / 100.0));
+            });
+            refresh_icon(window);
+        }
+        2 => {
+            let next = APP.with_borrow(|app| {
+                let order = [Mode::Snow, Mode::Autumn, Mode::Rain, Mode::Blossom];
+                let mode = app.as_ref()?.settings.picked.mode;
+                let at = order.iter().position(|&m| m == mode).unwrap_or(0);
+                Some([ID_SNOW, ID_AUTUMN, ID_RAIN, ID_BLOSSOM][(at + 1) % 4])
+            });
+            if let Some(next) = next {
+                choose(window, next, login);
+            }
+        }
+        5 => choose(window, ID_CLEAR, login),
+        6 => choose(window, ID_SP_FROST, login),
+        7 => choose(window, ID_SP_GARLAND, login),
+        8 => show_help(window),
+        _ => {}
+    }
+}
+
+fn show_help(window: HWND) {
+    let body: Vec<u16> = tr("sp.help.text").encode_utf16().chain([0]).collect();
+    let title: Vec<u16> = tr("sp.help").trim_end_matches('…').encode_utf16().chain([0]).collect();
+    unsafe {
+        MessageBoxW(Some(window), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+/// "snow", or "снег" on a Russian layout, typed anywhere brings a flurry. Only the eight keys those words use are looked
+/// at, and only the order they go down in is kept, for two seconds: nothing typed is read, stored or sent.
+fn watch_words() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    // S N O W, and C Y T U where a Russian layout has С Н Е Г.
+    const KEYS: [u16; 8] = [0x53, 0x4E, 0x4F, 0x57, 0x43, 0x59, 0x54, 0x55];
+    let now = unsafe { windows::Win32::System::SystemInformation::GetTickCount() };
+    let flurry = MAGIC.with_borrow_mut(|magic| {
+        let mut down = 0u8;
+        for (i, key) in KEYS.iter().enumerate() {
+            if unsafe { GetAsyncKeyState(*key as i32) } < 0 {
+                down |= 1 << i;
+                if magic.keys_down & (1 << i) == 0 {
+                    magic.typed.push((i as u8, now));
+                }
+            }
+        }
+        magic.keys_down = down;
+        magic.typed.retain(|(_, at)| now.wrapping_sub(*at) < 2000);
+        let last: Vec<u8> = magic.typed.iter().rev().take(4).rev().map(|(key, _)| *key).collect();
+        let typed = last == [0, 1, 2, 3] || last == [4, 5, 6, 7];
+        if typed {
+            magic.typed.clear();
+        }
+        typed
+    });
+    if flurry {
+        APP.with_borrow(|app| app.as_ref().map(|app| send(app, Command::Flurry)));
+    }
+}
+
+/// Snowpuff's rows in the menu: under Mode, in Settings, and at the end.
+fn snowpuff_entries(sliders: bool) -> (Vec<Entry>, Vec<Entry>, Vec<Entry>) {
+    let extra = crate::extra::get();
+    let toggle = |id: u32, key: &str, on: bool| if sliders { Entry::toggle(id, tr(key), on, true) } else { Entry::item(id, tr(key), on, true) };
+    let weather = match (extra.live_weather, crate::extra::outside()) {
+        (true, Some(now)) => format!("{} · {}", tr("sp.weather"), now.summary(text::code() == "ru")),
+        _ => tr("sp.weather").to_string(),
+    };
+    let modes = vec![
+        Entry::Separator,
+        Entry::item(ID_SP_HAIL, tr("sp.hail"), extra.hail, !extra.live_weather),
+        if sliders {
+            Entry::toggle(ID_SP_WEATHER, &weather, extra.live_weather, true)
+        } else {
+            Entry::item(ID_SP_WEATHER, &weather, extra.live_weather, true)
+        },
+    ];
+    let sounds = ["sp.sound.off", "sp.sound.wind", "sp.sound.fire", "sp.sound.both"];
+    let mut sound: Vec<Entry> =
+        sounds.iter().enumerate().map(|(i, key)| Entry::choice(ID_SP_SOUND + i as u32, tr(key), extra.ambience == i as u32)).collect();
+    sound.push(Entry::Separator);
+    sound.push(Entry::header(tr("sp.volume")));
+    sound
+        .extend(VOLUMES.iter().enumerate().map(|(i, &volume)| Entry::choice(ID_SP_VOLUME + i as u32, &format!("{volume}%"), extra.volume == volume)));
+    sound.push(Entry::Separator);
+    sound.push(Entry::item(ID_SP_EFFECTS, tr("sp.effects"), extra.sound_effects, true));
+    let options = vec![
+        Entry::Separator,
+        Entry::header(tr("sp.magic")),
+        toggle(ID_SP_ICICLES, "sp.icicles", extra.icicles),
+        toggle(ID_SP_GLOW, "sp.glow", extra.warm_glow),
+        toggle(ID_SP_FROST, "sp.frost", extra.frost),
+        toggle(ID_SP_GARLAND, "sp.garland", extra.garland),
+        toggle(ID_SP_STARS, "sp.stars", extra.stars),
+        toggle(ID_SP_FOG, "sp.fog", extra.fog),
+        toggle(ID_SP_SWIRL, "sp.swirl", extra.blizzard),
+        toggle(ID_SP_CREATURES, "sp.creatures", extra.creatures),
+        toggle(ID_SP_PUFF, "sp.puff", extra.puff),
+        toggle(ID_SP_WORDS, "sp.words", extra.words),
+        toggle(ID_SP_HOTKEYS, "sp.hotkeys", extra.hotkeys),
+        toggle(ID_SP_CALLS, "sp.calls", extra.quiet_on_calls),
+        Entry::Submenu { label: tr("sp.sound").to_string(), entries: sound, shimmer: false },
+        toggle(ID_SP_AUTO_UPDATE, "sp.autoupdate", extra.auto_update),
+    ];
+    let end = vec![Entry::item(ID_SP_HELP, tr("sp.help"), false, true), Entry::item(ID_SP_REPORT, tr("sp.report"), false, true)];
+    (modes, options, end)
+}
+
+/// A Snowpuff row chosen; returns whether it was one.
+fn choose_snowpuff(window: HWND, chosen: u32) -> bool {
+    let flip = |change: fn(&mut crate::extra::Extra)| {
+        crate::extra::change(change);
+    };
+    match chosen {
+        ID_SP_HAIL => flip(|e| e.hail = !e.hail),
+        ID_SP_WEATHER => {
+            let on = crate::extra::change(|e| e.live_weather = !e.live_weather).live_weather;
+            if on {
+                crate::weather::look_outside(window);
+                unsafe { SetTimer(Some(window), TIMER_OUTSIDE, 30 * 60 * 1000, None) };
+            } else {
+                crate::extra::set_outside(None);
+                unsafe {
+                    let _ = KillTimer(Some(window), TIMER_OUTSIDE);
+                }
+            }
+        }
+        ID_SP_ICICLES => flip(|e| e.icicles = !e.icicles),
+        ID_SP_GLOW => flip(|e| e.warm_glow = !e.warm_glow),
+        ID_SP_FROST => flip(|e| e.frost = !e.frost),
+        ID_SP_GARLAND => flip(|e| e.garland = !e.garland),
+        ID_SP_STARS => flip(|e| e.stars = !e.stars),
+        ID_SP_FOG => flip(|e| e.fog = !e.fog),
+        ID_SP_SWIRL => flip(|e| e.blizzard = !e.blizzard),
+        ID_SP_CREATURES => flip(|e| e.creatures = !e.creatures),
+        ID_SP_EFFECTS => flip(|e| e.sound_effects = !e.sound_effects),
+        ID_SP_CALLS => flip(|e| e.quiet_on_calls = !e.quiet_on_calls),
+        ID_SP_AUTO_UPDATE => flip(|e| e.auto_update = !e.auto_update),
+        ID_SP_PUFF => {
+            if crate::extra::change(|e| e.puff = !e.puff).puff {
+                listen(window);
+            } else {
+                MAGIC.with_borrow_mut(|magic| magic.ear = None);
+            }
+        }
+        ID_SP_WORDS => {
+            if crate::extra::change(|e| e.words = !e.words).words {
+                unsafe { SetTimer(Some(window), TIMER_WORDS, 60, None) };
+            } else {
+                unsafe {
+                    let _ = KillTimer(Some(window), TIMER_WORDS);
+                }
+            }
+        }
+        ID_SP_HOTKEYS => {
+            if crate::extra::change(|e| e.hotkeys = !e.hotkeys).hotkeys {
+                register_hotkeys(window);
+            } else {
+                unregister_hotkeys(window);
+            }
+        }
+        ID_SP_HELP => show_help(window),
+        ID_SP_REPORT => update::open(&update::report_link()),
+        id if (ID_SP_SOUND..ID_SP_SOUND + 4).contains(&id) => {
+            crate::extra::change(|e| e.ambience = id - ID_SP_SOUND);
+        }
+        id if (ID_SP_VOLUME..ID_SP_VOLUME + VOLUMES.len() as u32).contains(&id) => {
+            crate::extra::change(|e| e.volume = VOLUMES[(id - ID_SP_VOLUME) as usize]);
+        }
+        _ => return false,
+    }
+    APP.with_borrow(|app| app.as_ref().map(|app| send(app, Command::Puff)));
+    true
+}
+
+/// Snowpuff's messages to the tray's window; None for any other.
+fn snowpuff_message(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+    match message {
+        WM_HOTKEY => hotkey(window, wparam.0 as i32),
+        WM_TIMER if wparam.0 == TIMER_WORDS => watch_words(),
+        WM_TIMER if wparam.0 == TIMER_OUTSIDE => crate::weather::look_outside(window),
+        WM_MIC_FAILED => {
+            MAGIC.with_borrow_mut(|magic| magic.ear = None);
+            let body: Vec<u16> = tr("sp.mic").encode_utf16().chain([0]).collect();
+            unsafe {
+                MessageBoxW(Some(window), PCWSTR(body.as_ptr()), w!("Snowpuff"), MB_OK | MB_ICONWARNING);
+            }
+        }
+        crate::weather::WM_WEATHER => {
+            let result = unsafe { Box::from_raw(lparam.0 as *mut std::result::Result<crate::weather::Now, String>) };
+            if crate::extra::get().live_weather {
+                match *result {
+                    Ok(now) => crate::extra::set_outside(Some(now)),
+                    Err(error) => {
+                        crate::extra::change(|e| e.live_weather = false);
+                        let body: Vec<u16> = error.encode_utf16().chain([0]).collect();
+                        unsafe {
+                            MessageBoxW(Some(window), PCWSTR(body.as_ptr()), w!("Snowpuff"), MB_OK | MB_ICONWARNING);
+                        }
+                    }
+                }
+                APP.with_borrow(|app| app.as_ref().map(|app| send(app, Command::Puff)));
+            }
+        }
+        _ => return None,
+    }
+    Some(LRESULT(0))
 }

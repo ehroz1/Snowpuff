@@ -8,10 +8,10 @@
 use std::f32::consts::{PI, TAU};
 use std::hash::{BuildHasher, Hasher};
 
-use crate::geometry::V2;
-use super::types::RainWindow;
 use super::sfx::Cue;
+use super::types::RainWindow;
 use super::types::Sprite;
+use crate::geometry::V2;
 
 pub const GLOW: f32 = -4.0;
 pub const SNOWMAN: f32 = -5.0;
@@ -52,7 +52,17 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { weather: Weather::Snow, intensity: 1.0, blizzard: true, fog: false, stars: true, garland: false, frost: true, creatures: true, snowmen: false }
+        Settings {
+            weather: Weather::Snow,
+            intensity: 1.0,
+            blizzard: true,
+            fog: false,
+            stars: true,
+            garland: false,
+            frost: true,
+            creatures: true,
+            snowmen: false,
+        }
     }
 }
 
@@ -521,10 +531,10 @@ impl Extras {
                 gravity: 40.0,
                 drag: 1.6,
                 glow: false,
-            trail: false,
-            glitter: false,
-            crackle: false,
-        });
+                trail: false,
+                glitter: false,
+                crackle: false,
+            });
         }
     }
 
@@ -609,7 +619,10 @@ impl Extras {
             let mut surface = None;
             for window in windows {
                 let top = window.frame.max_y();
-                if from.y >= top && to.y < top && to.x >= window.frame.x && to.x <= window.frame.max_x()
+                if from.y >= top
+                    && to.y < top
+                    && to.x >= window.frame.x
+                    && to.x <= window.frame.max_x()
                     && !window.fronts.iter().any(|f| to.x >= f.x && to.x <= f.max_x() && top >= f.y && top <= f.max_y())
                 {
                     surface = Some(surface.map_or(top, |s: f32| s.max(top)));
@@ -758,15 +771,8 @@ impl Extras {
     }
 
     fn launch(&mut self) {
-        let palette = [
-            [1.0, 0.32, 0.3],
-            [1.0, 0.75, 0.3],
-            [0.4, 0.75, 1.0],
-            [0.55, 1.0, 0.55],
-            [1.0, 0.5, 0.85],
-            [0.8, 0.55, 1.0],
-            [1.0, 0.95, 0.85],
-        ];
+        let palette =
+            [[1.0, 0.32, 0.3], [1.0, 0.75, 0.3], [0.4, 0.75, 1.0], [0.55, 1.0, 0.55], [1.0, 0.5, 0.85], [0.8, 0.55, 1.0], [1.0, 0.95, 0.85]];
         let pick = |v: f32| palette[(v * palette.len() as f32) as usize % palette.len()];
         let color = pick(self.next());
         let second = pick(self.next());
@@ -870,7 +876,21 @@ impl Extras {
                 let velocity = V2::new(angle.cos(), angle.sin()) * self.range(60.0, 260.0) + V2::new(0.0, 60.0);
                 let size = self.range(1.5, 3.5);
                 let life = self.range(0.6, 1.4);
-                self.particles.push(Particle { position: at, velocity, size, alpha: 1.0, age: 0.0, life, color: [1.0, 1.0, 1.0], gravity: 700.0, drag: 0.8, glow: false, trail: false, glitter: false, crackle: false });
+                self.particles.push(Particle {
+                    position: at,
+                    velocity,
+                    size,
+                    alpha: 1.0,
+                    age: 0.0,
+                    life,
+                    color: [1.0, 1.0, 1.0],
+                    gravity: 700.0,
+                    drag: 0.8,
+                    glow: false,
+                    trail: false,
+                    glitter: false,
+                    crackle: false,
+                });
             }
             let seed = self.next();
             self.splats.push(Splat { position: at, age: 0.0, seed });
@@ -878,7 +898,9 @@ impl Extras {
             if !matches!(self.bird.state, BirdState::Waiting(_) | BirdState::Leaving) && (self.bird.position - at).length() < 160.0 {
                 self.bird_leave();
             }
-            if matches!(self.cat.state, CatState::Rising | CatState::Looking(_)) && (V2::new(self.cat.x, self.ground_at(self.cat.x)) - at).length() < 160.0 {
+            if matches!(self.cat.state, CatState::Rising | CatState::Looking(_))
+                && (V2::new(self.cat.x, self.ground_at(self.cat.x)) - at).length() < 160.0
+            {
                 self.cat.state = CatState::Sinking;
             }
         }
@@ -900,7 +922,21 @@ impl Extras {
             for _ in 0..8 {
                 let velocity = V2::new(self.range(-30.0, 30.0), self.range(-20.0, 20.0));
                 let size = self.range(1.5, 3.0);
-                self.particles.push(Particle { position: at, velocity, size, alpha: 0.9, age: 0.0, life: 2.0, color: [1.0, 1.0, 1.0], gravity: 500.0, drag: 0.5, glow: false, trail: false, glitter: false, crackle: false });
+                self.particles.push(Particle {
+                    position: at,
+                    velocity,
+                    size,
+                    alpha: 0.9,
+                    age: 0.0,
+                    life: 2.0,
+                    color: [1.0, 1.0, 1.0],
+                    gravity: 500.0,
+                    drag: 0.5,
+                    glow: false,
+                    trail: false,
+                    glitter: false,
+                    crackle: false,
+                });
             }
         }
     }
@@ -1046,12 +1082,8 @@ impl Extras {
                     self.bird.state = BirdState::Waiting(left.max(if allowed { 0.0 } else { 30.0 }));
                     return;
                 }
-                let candidates: Vec<RainWindow> = self
-                    .windows
-                    .iter()
-                    .filter(|w| w.frame.width > 220.0 && w.frame.max_y() < self.height - 40.0)
-                    .cloned()
-                    .collect();
+                let candidates: Vec<RainWindow> =
+                    self.windows.iter().filter(|w| w.frame.width > 220.0 && w.frame.max_y() < self.height - 40.0).cloned().collect();
                 if candidates.is_empty() {
                     self.bird.state = BirdState::Waiting(30.0);
                     return;
@@ -1144,7 +1176,21 @@ impl Extras {
             let velocity = V2::new(self.range(-30.0, 30.0), -self.range(60.0, 120.0));
             let size = self.range(4.0, 7.5);
             let life = self.height / 70.0 + 4.0;
-            self.particles.push(Particle { position, velocity, size, alpha: 0.95, age: 0.0, life, color: [1.0, 1.0, 1.0], gravity: 0.0, drag: 0.0, glow: false, trail: false, glitter: false, crackle: false });
+            self.particles.push(Particle {
+                position,
+                velocity,
+                size,
+                alpha: 0.95,
+                age: 0.0,
+                life,
+                color: [1.0, 1.0, 1.0],
+                gravity: 0.0,
+                drag: 0.0,
+                glow: false,
+                trail: false,
+                glitter: false,
+                crackle: false,
+            });
         }
     }
 
@@ -1311,7 +1357,13 @@ impl Extras {
             }
         }
         for puff in &self.puffs {
-            put(Sprite { position: puff.position, size: puff.size, alpha: puff.alpha * (1.0 - puff.thinned), leaf: [FOG, puff.seed, 0.0], ..Default::default() });
+            put(Sprite {
+                position: puff.position,
+                size: puff.size,
+                alpha: puff.alpha * (1.0 - puff.thinned),
+                leaf: [FOG, puff.seed, 0.0],
+                ..Default::default()
+            });
         }
         if self.settings.garland {
             self.write_garland(&mut put);
@@ -1331,7 +1383,14 @@ impl Extras {
         }
         for stone in &self.hail {
             let fade = if stone.resting > 0.0 { 1.0 - stone.resting / 1.6 } else { 1.0 };
-            put(Sprite { position: stone.position, velocity: stone.velocity, size: stone.size, alpha: 0.95 * fade, leaf: [HAIL, 0.0, 0.0], ..Default::default() });
+            put(Sprite {
+                position: stone.position,
+                velocity: stone.velocity,
+                size: stone.size,
+                alpha: 0.95 * fade,
+                leaf: [HAIL, 0.0, 0.0],
+                ..Default::default()
+            });
         }
         for snowman in &self.snowmen {
             let ground = self.ground_at(snowman.x).max(0.0);
@@ -1378,7 +1437,12 @@ impl Extras {
             let size = 30.0;
             let window_hidden = matches!(self.bird.state, BirdState::Perched(_))
                 && self.windows.iter().find(|w| w.id == self.bird.window).is_some_and(|w| {
-                    w.fronts.iter().any(|f| self.bird.position.x >= f.x && self.bird.position.x <= f.max_x() && self.bird.position.y >= f.y && self.bird.position.y <= f.max_y())
+                    w.fronts.iter().any(|f| {
+                        self.bird.position.x >= f.x
+                            && self.bird.position.x <= f.max_x()
+                            && self.bird.position.y >= f.y
+                            && self.bird.position.y <= f.max_y()
+                    })
                 });
             if !window_hidden {
                 put(Sprite {
@@ -1407,11 +1471,8 @@ impl Extras {
 
     /// The windows a garland hangs on: those wide enough, their tops in sight, the largest first, a few at most.
     fn garland_windows(&self) -> Vec<&RainWindow> {
-        let mut windows: Vec<&RainWindow> = self
-            .windows
-            .iter()
-            .filter(|w| w.frame.width >= 180.0 && w.frame.max_y() < self.height - self.top_inset - 6.0)
-            .collect();
+        let mut windows: Vec<&RainWindow> =
+            self.windows.iter().filter(|w| w.frame.width >= 180.0 && w.frame.max_y() < self.height - self.top_inset - 6.0).collect();
         windows.sort_by(|a, b| (b.frame.width * b.frame.height).total_cmp(&(a.frame.width * a.frame.height)));
         windows.truncate(6);
         windows
@@ -1465,7 +1526,13 @@ impl Extras {
                 let i = bulb as f32;
                 let on = match pattern {
                     0 => 0.15 + 0.85 * (((self.clock * 2.6 - i * 0.45).sin()) * 0.5 + 0.5).powi(2),
-                    1 => if hash(i, (self.clock * 1.6).floor()) > 0.35 { 1.0 } else { 0.18 },
+                    1 => {
+                        if hash(i, (self.clock * 1.6).floor()) > 0.35 {
+                            1.0
+                        } else {
+                            0.18
+                        }
+                    }
                     _ => 0.35 + 0.65 * ((self.clock * 1.1 + i * 0.9).sin() * 0.5 + 0.5),
                 };
                 put(Sprite { position: at, size: 15.0, alpha: 1.0, tint_amount: 1.0, tint: color, leaf: [BULB, on, angle], ..Default::default() });
@@ -1590,7 +1657,12 @@ mod tests {
     #[test]
     fn the_bird_lands_on_a_window_and_leaves_when_the_cursor_comes() {
         let mut extras = Extras::new(1600.0, 1000.0);
-        extras.set_windows(&[RainWindow { id: 7, frame: Rect { x: 300.0, y: 200.0, width: 700.0, height: 500.0 }, fronts: vec![], ledge_only: false }]);
+        extras.set_windows(&[RainWindow {
+            id: 7,
+            frame: Rect { x: 300.0, y: 200.0, width: 700.0, height: 500.0 },
+            fronts: vec![],
+            ledge_only: false,
+        }]);
         extras.bird.state = BirdState::Waiting(0.0);
         frame(&mut extras, Input { daylight: 1.0, ..Default::default() }, 3.0);
         assert!(matches!(extras.bird.state, BirdState::Perched(_)));
@@ -1624,7 +1696,12 @@ mod tests {
     fn writes_what_it_counts() {
         let mut extras = Extras::new(1200.0, 800.0);
         extras.settings.garland = true;
-        extras.set_windows(&[RainWindow { id: 3, frame: Rect { x: 100.0, y: 100.0, width: 700.0, height: 400.0 }, fronts: vec![], ledge_only: false }]);
+        extras.set_windows(&[RainWindow {
+            id: 3,
+            frame: Rect { x: 100.0, y: 100.0, width: 700.0, height: 400.0 },
+            fronts: vec![],
+            ledge_only: false,
+        }]);
         extras.settings.fog = true;
         extras.settings.weather = Weather::Hail;
         extras.fireworks(3.0);

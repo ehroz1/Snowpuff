@@ -23,9 +23,9 @@ runtime_sha256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 stage=$work/stage
 install -Dm755 "$binary" "$stage/usr/bin/snowpuff"
 install -Dm644 "$here/snowpuff.desktop" "$stage/usr/share/applications/snowpuff.desktop"
-install -Dm644 "$root/site/assets/icon-64.png" "$stage/usr/share/icons/hicolor/64x64/apps/snowpuff.png"
+install -Dm644 "$root/Assets/icon/png/snowpuff-square-64.png" "$stage/usr/share/icons/hicolor/64x64/apps/snowpuff.png"
 install -Dm644 "$root/windows/assets/icon-256.png" "$stage/usr/share/icons/hicolor/256x256/apps/snowpuff.png"
-install -Dm644 "$root/site/assets/icon-512.png" "$stage/usr/share/icons/hicolor/512x512/apps/snowpuff.png"
+install -Dm644 "$root/Assets/icon/png/snowpuff-square-512.png" "$stage/usr/share/icons/hicolor/512x512/apps/snowpuff.png"
 install -Dm644 "$root/LICENSE" "$stage/usr/share/licenses/snowpuff/LICENSE"
 install -Dm644 "$root/Resources/ThirdParty/Notices.txt" "$stage/usr/share/licenses/snowpuff/ThirdPartyNotices.txt"
 

@@ -22,8 +22,8 @@ package() {
     install -Dm755 "$srcdir/target/release/snowpuff" "$pkgdir/usr/bin/snowpuff"
     install -Dm644 "$_root/linux/packaging/snowpuff.desktop" "$pkgdir/usr/share/applications/snowpuff.desktop"
     install -Dm644 "$_root/windows/assets/icon-256.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/snowpuff.png"
-    install -Dm644 "$_root/site/assets/icon-512.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/snowpuff.png"
-    install -Dm644 "$_root/site/assets/icon-64.png" "$pkgdir/usr/share/icons/hicolor/64x64/apps/snowpuff.png"
+    install -Dm644 "$_root/Assets/icon/png/snowpuff-square-512.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/snowpuff.png"
+    install -Dm644 "$_root/Assets/icon/png/snowpuff-square-64.png" "$pkgdir/usr/share/icons/hicolor/64x64/apps/snowpuff.png"
     install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "$_root/Resources/ThirdParty/Notices.txt" "$pkgdir/usr/share/licenses/$pkgname/ThirdPartyNotices.txt"
 }
