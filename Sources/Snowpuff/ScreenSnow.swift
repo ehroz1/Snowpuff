@@ -1,5 +1,4 @@
 import AppKit
-import CSnowpuffCore
 import MetalKit
 
 /// The snow on one display: its overlay window, simulation and renderer, the windows tracked on it and its light.
@@ -10,48 +9,111 @@ final class ScreenSnow {
     let simulation: SnowSimulation
     private let view: MTKView
     private let renderer: Renderer
-    private let tracker = WindowTracker()
+    private let tracker: WindowTracker
+    private let displays: Displays
     private let light = SceneLight()
+    /// The snow lying in the wallpaper, in windows of its own at the desktop's level.
+    let picture: PictureSnow?
     private(set) var screen: NSScreen
-    let icicles = Icicles()
-    let rain: Rain
-    let extras: SceneExtras
-    /// The windows from the last poll, for a drag selection to join.
-    private var lastSurfaces: [WindowSurface] = []
-    /// A selection being dragged across the desktop: where it started, and whether one showed last frame.
-    private var selectionStart: CGPoint?
-    private var selectionShown = false
-    private var lastSelectionAt: CFTimeInterval = 0
-    private static let selectionID: CGWindowID = 0x5E1E_C7ED
-    var autumn: Bool {
-        get { simulation.autumn }
-        set { simulation.autumn = newValue }
-    }
-    /// A call is on: the snow steps aside.
-    var hushed = false {
-        didSet { if hushed != oldValue { refreshVisibility() } }
-    }
-    /// The snow stays over full-screen apps instead of stepping out of their way.
-    var overFullScreen = Preferences.overFullScreen {
-        didSet { if overFullScreen != oldValue { checkFullScreen() } }
-    }
-    /// A full-screen app's Space shows on this display: the snow fades out and rests until it goes.
+    /// Awake and showing; at rest with nothing to draw, the view may still be paused.
+    private var active = true
+    /// An app in full screen on this display: the snow fades out of its way and waits until it goes.
     private(set) var covered = false
-    /// Showing, or still fading out: drawing goes on until the snow is out of sight.
-    private(set) var showing = true
-    /// Called once the snow has faded in or out, to pause or resume drawing.
-    var visibilityChanged: () -> Void = {}
+    /// A full-screen app's Space is the current one here, though Mission Control may still show over it.
+    private var fullScreenCurrent = false
+    /// The snow stays over full-screen apps instead of fading out of their way.
+    var overFullScreen = false {
+        didSet {
+            guard overFullScreen != oldValue else { return }
+            following = false
+            arriving = false
+            goneFullScreenAt = -10
+            fullScreenSpaces = nil
+            checkCovered()
+            activityChanged()
+        }
+    }
+    /// Mission Control shows over a full-screen app's Space, picked in it or opened from it: the snow stays until
+    /// the app fills the screen.
+    private var exposed = false
+    private var exposedSeenAt: CFTimeInterval = 0
+    /// Mission Control can drop out of the window list for a moment as it moves to a full-screen app's Space: the
+    /// app covers the snow only once Mission Control has stayed away a little while.
+    private var coverAfter: CFTimeInterval = 0
+    /// Swiped away from the full-screen app, its Space still current while the desktop slides back in.
+    private var leaving = false
+    /// An app here going full screen, its Space about to slide in.
+    private var arriving = false
+    /// The full-screen apps' Spaces on this display at the last look.
+    private var fullScreenSpaces: Set<UInt64>?
+    private var spacesSeenAt: CFTimeInterval = 0
+    /// When an app here last went full screen: its Space is added as the move starts, and is current only once it's in.
+    private var goneFullScreenAt: CFTimeInterval = -10
+    /// How much of the screen a full-screen app's Space covers as it slides, as seen without the windows tracked.
+    private var untrackedShare: CGFloat = 0
+    private var shareSeenAt: CFTimeInterval = 0
+    /// Hidden by the window server, as while an app goes full screen.
+    private var occluded = false
+    /// What the overlays were last faded to; nil while they follow a slide.
+    private var alphaTarget: CGFloat? = 1
+    /// Following a slide between a desktop and a full-screen app: how much of the snow shows, and how much it's
+    /// heading for.
+    private var following = false
+    private var slideAlpha: CGFloat = 1
+    private var slideGoal: CGFloat = 1
+    private var slideFrameAt: CFTimeInterval = 0
+    /// Looks for the desktop sliding back in while a full-screen app hides the snow.
     private var lookout: Timer?
+    private var asleep = false
+    private var closedCheckedAt: CFTimeInterval = 0
+    /// Asks for the snow to be woken or put to rest again.
+    var activityChanged: () -> Void = {}
+    /// Faded all the way out for a full-screen app: the snow keeps falling until then.
+    private var gone = false
+    private var fadeEndsAt: CFTimeInterval = 0
+    /// Hidden for a full-screen app: nothing to draw.
+    var givesWay: Bool { covered && !leaving && gone }
+    /// Fading in or out: still drawn, though the window server may already count the overlay as hidden, as while a
+    /// full-screen app picked in Mission Control zooms in.
+    var fading: Bool { CACurrentMediaTime() < fadeEndsAt }
+    /// The quickest the snow comes in and goes, in seconds from none to all of it.
+    private static let fadeIn: CGFloat = 0.35
+    private static let fadeOut: CGFloat = 0.15
+    /// Picked in Mission Control or switched to, a full-screen app zooms in from where it was: the snow goes with it.
+    private static let giveWay: CGFloat = 0.4
+    var halloween = false {
+        didSet {
+            light.halloween = halloween
+            light.invalidate()
+            simulation.halloween = halloween
+        }
+    }
+    var newYear = false {
+        didSet {
+            simulation.newYear = newYear
+            treeView.isHidden = !newYear
+            placeTree()
+            wake()
+        }
+    }
+    private let treeView: TreeView
+    var modes: [Mode] {
+        get { simulation.modes }
+        set { simulation.modes = newValue }
+    }
 
-    init?(screen: NSScreen, device: MTLDevice, snowOnWindows: @escaping () -> Bool) {
+    init?(screen: NSScreen, device: MTLDevice, displays: Displays, surfaces: @escaping () -> Surfaces) {
         guard let displayID = screen.displayID else { return nil }
         let simulation = SnowSimulation(
             width: Float(screen.frame.width),
             height: Float(screen.frame.height),
-            snowfall: Preferences.rain ? .off : Preferences.snowfall
+            intensity: Float(Preferences.intensity)
         )
         simulation.thaws = Preferences.meltSnow
-        simulation.accumulates = Preferences.accumulate
+        let settled = Preferences.surfaces
+        simulation.accumulates = !settled.isEmpty
+        simulation.groundSettles = settled.contains(.ground)
+        simulation.fallingOpacity = Float(Preferences.fallingOpacity)
         let renderer: Renderer
         do {
             renderer = try Renderer(device: device, pixelFormat: .bgra8Unorm, simulation: simulation)
@@ -60,115 +122,81 @@ final class ScreenSnow {
             return nil
         }
         self.displayID = displayID
+        self.displays = displays
+        tracker = WindowTracker(displays: displays)
         self.screen = screen
-        rain = Rain(width: Float(screen.frame.width), height: Float(screen.frame.height))
-        extras = SceneExtras(width: Float(screen.frame.width), height: Float(screen.frame.height))
-        rain.intensity = Rain.intensity(Preferences.snowfall)
-        rain.on = Preferences.rain && Preferences.snowfall != .off
         self.simulation = simulation
         self.renderer = renderer
         window = OverlayWindow(screen: screen)
         window.behindWindows = Preferences.behindWindows
         window.showsInScreenshots = Preferences.showInScreenshots
+        overFullScreen = Preferences.showOverFullScreen
         dock = DockOverlay(screen: screen, device: device)
         dock.window.showsInScreenshots = Preferences.showInScreenshots
         renderer.dockOverlay = dock
+        picture = PictureSnow(screen: screen, device: device, simulation: simulation)
+        picture?.showsInScreenshots = Preferences.showInScreenshots
         view = Self.makeView(device: device, size: screen.frame.size)
+        treeView = TreeView(device: device)
+        renderer.treeView = treeView
 
-        renderer.cursorLocation = { [unowned window] in
+        // The closures below name the properties through self: init's own `renderer` and `simulation` would be captured
+        // instead, and the renderer would keep itself, and the simulation, alive after the display is gone.
+        renderer.cursorLocation = { [unowned self] in
+            // Notification Center is in front of the snow then, which the pointer over it can't reach.
+            if window.notificationLevel != nil && tracker.notificationCoversPointer { return SIMD2(-10_000, -10_000) }
             let mouse = NSEvent.mouseLocation
             return SIMD2(Float(mouse.x - window.frame.minX), Float(mouse.y - window.frame.minY))
         }
         renderer.windowSurfaces = { [unowned self] now in
             // Behind the windows the snow still settles on them: what lies on a window's top edge is above it, in
             // plain view.
-            guard snowOnWindows() else { return nil }
-            let polled = tracker.poll(now: now, eager: NSEvent.pressedMouseButtons != 0)
-            let covers = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
-            simulation.windowFrames = covers
-            var update = polled.map { polled in
-                // The Dock can be left bare from the Accumulate menu.
-                Preferences.snowOnDock ? polled : WindowUpdate(
-                    surfaces: polled.surfaces.filter { !$0.isDock }, interval: polled.interval, parked: polled.parked,
-                    elsewhere: polled.elsewhere, sliding: polled.sliding, slideVelocity: polled.slideVelocity
-                )
-            }
-            if let update { lastSurfaces = update.surfaces }
-            // A selection dragged across the desktop catches the snow too, while it is held.
-            let selection = selection(covers: covers)
-            if selection != nil || selectionShown {
-                let interval = Float(min(max(now - lastSelectionAt, 1.0 / 120), 0.25))
-                lastSelectionAt = now
-                let extra = selection.map { [WindowSurface(id: Self.selectionID, frame: $0, blockers: [], cornerRadius: 1, cornerExponent: 2, isDock: false)] } ?? []
-                update = WindowUpdate(
-                    surfaces: lastSurfaces + extra, interval: update?.interval ?? interval, parked: update?.parked ?? [],
-                    elsewhere: update?.elsewhere ?? [], sliding: false, slideVelocity: 0
-                )
-                selectionShown = selection != nil
-            }
-            if polled != nil { extras.setCovers(covers) }
-            if let update {
-                icicles.update(update.surfaces, interval: update.interval, keep: update.parked.union(update.elsewhere), sliding: update.sliding)
-                rain.updateWindows(update.surfaces, interval: Double(update.interval))
-                extras.setWindows(update.surfaces)
-            }
+            let settled = surfaces()
+            let tracked = !settled.isDisjoint(with: .tracked)
+            tracker.collects = settled.intersection(.tracked)
+            let update = tracked ? tracker.poll(now: now, eager: NSEvent.pressedMouseButtons != 0) : nil
+            window.notificationLevel = tracked ? tracker.notificationLevel : nil
+            watchForFullScreen(now: now, tracked: tracked)
+            guard tracked else { return nil }
+            forgetClosed(now: now)
+            for (id, display) in update?.handed ?? [:] { displays.hand(id, from: self, to: display) }
+            self.simulation.windowFrames = tracker.covers.map { SIMD4(Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)) }
             return update
+        }
+        renderer.borrowedSnow = { [unowned self] in
+            surfaces().contains(.windows) ? displays.borrowed(by: self) : []
+        }
+        renderer.stepped = { [unowned self] in
+            displays.pass(from: self)
+            picture?.stepFight()
         }
         renderer.sceneLight = { [unowned self] now in
             light.update(screen: self.screen, now: now)
             return (light.light, light.shadowTint, light.rim, light.lantern)
         }
-        icicles.enabled = Preferences.icicles && !Preferences.autumn && !Preferences.rain
-        renderer.icicles = icicles
-        renderer.rain = rain
-        renderer.extras = extras
-        renderer.daylight = { [unowned self] in light.day }
-        renderer.topInset = Float(screen.frame.maxY - screen.visibleFrame.maxY)
-        renderer.interaction = {
-            (NSEvent.pressedMouseButtons & 1 != 0, NSEvent.modifierFlags.contains(.option))
+        renderer.rest = { [unowned self] in
+            view.isPaused = true
+            self.renderer.releaseFrames(of: view)
         }
-        renderer.opacity = Preferences.opacity
-        renderer.warmGlow = { Preferences.warmGlow && snowOnWindows() }
-        renderer.focusedWindow = { [unowned self] in window.behindWindows ? nil : tracker.focused }
+        simulation.stirred = { [unowned self] in wake() }
+        renderer.fireworksOnDesktop = { [unowned self] fireworks, time in picture?.drawFireworks(fireworks, time: time) ?? false }
+        simulation.pictureCleared = { [unowned self] in picture?.cleared() }
+        simulation.pictureChanged = { [unowned self] in picture?.refresh() }
+        picture?.frost = settled.contains(.wallpaper)
+        picture?.depth = Preferences.depth
+        picture?.wanted = settled.contains(.wallpaper) || Preferences.depth
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
         measure()
         view.delegate = renderer
-        window.contentView = view
+        // The tree goes under the snow, so the drift covers its foot and the snow falls in front of it.
+        let content = NSView(frame: CGRect(origin: .zero, size: screen.frame.size))
+        content.wantsLayer = true
+        content.autoresizingMask = [.width, .height]
+        content.addSubview(treeView)
+        content.addSubview(view)
+        window.contentView = content
         window.orderFrontRegardless()
-        covered = !overFullScreen && Spaces.fullScreenShowing(on: displayID)
-        if covered {
-            window.alphaValue = 0
-            dock.window.alphaValue = 0
-            showing = false
-        }
-        // A full-screen app can come and go without a Space change being announced, as a video going full screen.
-        lookout = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.checkFullScreen() }
-    }
-
-    /// Fades the snow out of a full-screen app's way, or back once it goes.
-    func checkFullScreen() {
-        let now = !overFullScreen && !window.behindWindows && Spaces.fullScreenShowing(on: displayID)
-        guard now != covered else { return }
-        covered = now
-        refreshVisibility()
-    }
-
-    /// Shows the snow unless a call or a full-screen app keeps it away; it keeps falling while it fades.
-    private func refreshVisibility() {
-        let shown = !hushed && !covered
-        if shown {
-            showing = true
-            visibilityChanged()
-        }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = shown ? 0.5 : 0.35
-            window.animator().alphaValue = shown ? 1 : 0
-            dock.window.animator().alphaValue = shown ? 1 : 0
-        }, completionHandler: { [weak self] in
-            guard let self, !shown, hushed || covered else { return }
-            showing = false
-            visibilityChanged()
-        })
+        checkCovered()
     }
 
     func fit(to screen: NSScreen) {
@@ -176,17 +204,30 @@ final class ScreenSnow {
         window.setFrame(screen.frame, display: true)
         dock.fit(to: screen)
         Renderer.fitDrawable(of: view)
+        placeTree()
         simulation.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
-        rain.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
-        extras.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
-        renderer.topInset = Float(screen.frame.maxY - screen.visibleFrame.maxY)
+        picture?.fit(to: screen)
         light.invalidate()
         renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
         measure()
+        checkCovered()
+    }
+
+    private func placeTree() {
+        guard newYear else { return }
+        let x = CGFloat(simulation.treeX)
+        let extent = ChristmasTree.extent
+        let frame = CGRect(x: max(0, x + CGFloat(extent.x)), y: 0, width: CGFloat(extent.z - extent.x), height: CGFloat(extent.w))
+        treeView.fit(frame, scale: screen.backingScaleFactor)
     }
 
     private static func interactiveFrameRate(of screen: NSScreen) -> Int {
         min(max(screen.maximumFramesPerSecond, 60), 120)
+    }
+
+    var maxFrameRate: Bool {
+        get { renderer.maxFrameRate }
+        set { renderer.maxFrameRate = newValue }
     }
 
     func apply(_ budget: PowerBudget) {
@@ -194,70 +235,248 @@ final class ScreenSnow {
         simulation.density = budget == .saver ? 0.75 : 1
     }
 
-    func setActive(_ active: Bool) {
+    /// `asleep` with the screens off, locked or switched away from. Inactive, nothing is seen, so the frames are given
+    /// back.
+    func setActive(_ active: Bool, asleep: Bool) {
+        if asleep != self.asleep {
+            self.asleep = asleep
+            restartLookout()
+        }
+        self.active = active
+        picture?.setActive(active)
+        if !active { renderer.releaseFrames(of: view) }
         guard view.isPaused == active else { return }
+        if active { Renderer.fitDrawable(of: view) }
         view.isPaused = !active
         if active { renderer.resetClock() }
     }
 
-    /// Leaves are drawn as cherry petals.
-    var petals: Bool {
-        get { renderer.petals }
-        set { renderer.petals = newValue }
+    private func wake() {
+        picture?.wake()
+        guard active, view.isPaused else { return }
+        Renderer.fitDrawable(of: view)
+        view.isPaused = false
+        renderer.resetClock()
     }
 
-    var opacity: Float {
-        get { renderer.opacity }
-        set { renderer.opacity = newValue }
-    }
-
-    /// Sounds the extras ask for.
-    var cues: ([SPCue]) -> Void {
-        get { renderer.cues }
-        set { renderer.cues = newValue }
-    }
-
-    /// The point on this screen in its overlay's coordinates, if it is on it.
-    func local(_ point: NSPoint) -> SIMD2<Float>? {
-        guard window.frame.contains(point) else { return nil }
-        return SIMD2(Float(point.x - window.frame.minX), Float(point.y - window.frame.minY))
-    }
-
-    /// A rectangle being dragged out on the desktop, in overlay coordinates: started on no window, in Finder.
-    private func selection(covers: [SIMD4<Float>]) -> CGRect? {
-        guard Preferences.deepInteraction, NSEvent.pressedMouseButtons & 1 != 0, !NSEvent.modifierFlags.contains(.option),
-              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
-        else {
-            selectionStart = nil
-            return nil
-        }
-        let mouse = NSEvent.mouseLocation
-        let point = CGPoint(x: mouse.x - window.frame.minX, y: mouse.y - window.frame.minY)
-        if selectionStart == nil {
-            let onWindow = covers.contains { Float(point.x) >= $0.x && Float(point.x) <= $0.z && Float(point.y) >= $0.y && Float(point.y) <= $0.w }
-            guard window.frame.contains(mouse), !onWindow else { return nil }
-            selectionStart = point
-        }
-        guard let start = selectionStart else { return nil }
-        let rect = CGRect(x: min(start.x, point.x), y: min(start.y, point.y), width: abs(point.x - start.x), height: abs(point.y - start.y))
-        return rect.width > 12 && rect.height > 12 ? rect : nil
+    /// Now and then the snow kept for windows away lets go of those that closed there.
+    private func forgetClosed(now: CFTimeInterval) {
+        guard now - closedCheckedAt >= 5 else { return }
+        closedCheckedAt = now
+        let away = simulation.awayIDs
+        guard !away.isEmpty else { return }
+        simulation.forgetClosed(keeping: WindowTracker.open(among: away))
     }
 
     func dropWindowSnow() {
-        rain.updateWindows([], interval: 0.1)
         simulation.updateWindows([], interval: 0.1)
         simulation.windowFrames = []
-        icicles.dropAll()
         tracker.reset()
     }
 
+    /// Going full screen, an app adds its Space as the move starts, though it is the current one only once the app is
+    /// in. Swiped between a desktop and a full-screen app, the snow follows the desktop: as much of it shows as the
+    /// square of the desktop's share of the screen, so it is faint while the app fills most of it.
+    private func watchForFullScreen(now: CFTimeInterval, tracked: Bool) {
+        guard !overFullScreen else { return }
+        if covered {
+            // Still drawn while fading out under the app: the lookout watches for the desktop until it comes back.
+            guard leaving else { return }
+            if now - shareSeenAt >= 1.0 / 30 {
+                shareSeenAt = now
+                guard let shown = tracker.desktopShare(now: now), shown > 0 else {
+                    setLeaving(false)
+                    return
+                }
+                slideGoal = shown * shown
+            }
+            follow(now: now)
+            return
+        }
+        if now - spacesSeenAt >= 0.1 {
+            spacesSeenAt = now
+            if let spaces = Spaces.fullScreen(on: displayID)?.spaces {
+                if let known = fullScreenSpaces, !spaces.isSubset(of: known) { goneFullScreenAt = now }
+                fullScreenSpaces = spaces
+            }
+        }
+        if fullScreenCurrent && now - exposedSeenAt >= 1.0 / 30 {
+            exposedSeenAt = now
+            checkCovered()
+            if covered {
+                activityChanged()
+                return
+            }
+        }
+        let canSlide = !(fullScreenSpaces ?? []).isEmpty
+        // Untracked, the window list is read only while there is a full-screen app here to swipe to.
+        if !tracked && canSlide && now - shareSeenAt >= (untrackedShare > 0 ? 1.0 / 30 : 0.1) {
+            shareSeenAt = now
+            untrackedShare = tracker.readFullScreenShare(now: now)
+        }
+        let share = !canSlide ? 0 : tracked ? tracker.fullScreenShare : untrackedShare
+        let entering = now - goneFullScreenAt < 1
+        if entering != arriving {
+            arriving = entering
+            if arriving { following = false }
+            fade()
+        }
+        guard !arriving, share > 0 || following else { return }
+        if !following { startFollowing(now: now) }
+        slideGoal = (1 - share) * (1 - share)
+        follow(now: now)
+        if share == 0 && slideAlpha >= 0.999 {
+            following = false
+            fade()
+        }
+    }
+
+    /// The overlays sit in a Space of their own that shows over every other, full-screen apps' too.
+    private func checkCovered() {
+        let now = CACurrentMediaTime()
+        let was = covered
+        let wasFullScreen = fullScreenCurrent
+        fullScreenCurrent = !overFullScreen && Spaces.fullScreen(on: displayID)?.showing ?? false
+        if fullScreenCurrent && !wasFullScreen && !was { coverAfter = now + 0.2 }
+        exposed = fullScreenCurrent && (now < coverAfter || tracker.missionControlShows(now: now))
+        covered = fullScreenCurrent && !exposed
+        if covered != was {
+            fullScreenSpaces = nil
+            leaving = false
+            restartLookout()
+        }
+        if covered && !was { following = false }
+        if was && !covered {
+            arriving = false
+            goneFullScreenAt = -10
+        }
+        fade()
+    }
+
+    private func setLeaving(_ next: Bool) {
+        guard next != leaving else { return }
+        leaving = next
+        if leaving {
+            startFollowing(now: CACurrentMediaTime())
+            shareSeenAt = 0
+        } else {
+            following = false
+        }
+        fade()
+        activityChanged()
+    }
+
+    private func startFollowing(now: CFTimeInterval) {
+        following = true
+        slideAlpha = window.alphaValue
+        slideFrameAt = now
+        fade()
+    }
+
+    private func follow(now: CFTimeInterval) {
+        guard following else { return }
+        let dt = CGFloat(min(now - slideFrameAt, 0.05))
+        slideFrameAt = now
+        // Caught late in a quick swipe, the desktop is nearly in: the snow still comes in at its own pace.
+        let step = (slideGoal - slideAlpha) * min(1, dt / 0.08)
+        slideAlpha += min(max(step, -dt / Self.fadeOut), dt / Self.fadeIn)
+        guard !occluded, abs(window.alphaValue - slideAlpha) > 0.002 else { return }
+        window.alphaValue = slideAlpha
+        dock.window.alphaValue = slideAlpha
+    }
+
+    private func restartLookout() {
+        lookout?.invalidate()
+        lookout = covered && !asleep ? startLookout() : nil
+    }
+
+    /// Nothing is drawn under a full-screen app, so a few times a second the window list is read for the desktop
+    /// coming back, to bring the snow in with it; drawn again, the snow keeps watching each frame.
+    private func startLookout() -> Timer {
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self, covered, !leaving, !asleep else { return }
+            if tracker.missionControlShows(now: CACurrentMediaTime()) {
+                checkCovered()
+                activityChanged()
+                return
+            }
+            if let shown = tracker.desktopShare(now: CACurrentMediaTime()), shown > 0 { setLeaving(true) }
+        }
+        timer.tolerance = 0.05
+        RunLoop.main.add(timer, forMode: .common)
+        return timer
+    }
+
+    /// Gone full screen, the window server hides the overlays for the move and shows them again once the app is in:
+    /// they vanish while hidden, so they come back already gone.
+    private func fade() {
+        if following && !occluded {
+            alphaTarget = nil
+            return
+        }
+        let out = covered || arriving || occluded
+        let target: CGFloat = out ? 0 : 1
+        if target != alphaTarget {
+            alphaTarget = target
+            gone = false
+            let duration = occluded ? 0 : covered && !arriving ? Self.giveWay : out ? Self.fadeOut : 0.25
+            fadeEndsAt = CACurrentMediaTime() + duration
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                window.animator().alphaValue = target
+                dock.window.animator().alphaValue = target
+            }
+        }
+        finishFade()
+    }
+
+    /// An animation may be lost, as on an overlay just put on screen: once the fade's time is up its end is set
+    /// outright, and under a full-screen app the snow is put to rest.
+    private func finishFade() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, fadeEndsAt - CACurrentMediaTime()) + 0.02) { [weak self] in
+            guard let self, !following, let target = alphaTarget, CACurrentMediaTime() >= fadeEndsAt else { return }
+            if window.alphaValue != target || dock.window.alphaValue != target {
+                window.alphaValue = target
+                dock.window.alphaValue = target
+            }
+            guard covered, !leaving, !gone, target == 0 else { return }
+            gone = true
+            activityChanged()
+        }
+    }
+
+    func occlusionChanged() {
+        let hidden = !window.occlusionState.contains(.visible)
+        guard hidden != occluded else { return }
+        occluded = hidden
+        if hidden {
+            fade()
+        } else {
+            checkCovered()
+            if covered && !leaving, let shown = tracker.desktopShare(now: CACurrentMediaTime()), shown > 0 { setLeaving(true) }
+        }
+    }
+
     func spaceChanged() {
-        checkFullScreen()
+        checkCovered()
         simulation.spaceChanged()
+        picture?.spaceChanged()
         light.invalidate()
         watchWindows()
         window.holdInPlace()
         dock.window.holdInPlace()
+    }
+
+    /// Out of the screenshot tool's way, or back in place.
+    func stepAside(_ aside: Bool) {
+        picture?.stepAside(aside)
+        if aside {
+            window.orderOut(nil)
+            dock.window.orderOut(nil)
+        } else {
+            window.orderFrontRegardless()
+            dock.window.orderFrontRegardless()
+        }
     }
 
     func watchWindows() {
@@ -266,17 +485,21 @@ final class ScreenSnow {
 
     func close() {
         lookout?.invalidate()
+        active = false
         view.isPaused = true
         view.delegate = nil
         window.orderOut(nil)
         dock.close()
+        picture?.close()
     }
 
     /// Window bounds come in global coordinates with the origin at the top left of the primary display.
     private func measure() {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
         let frame = screen.frame
+        tracker.display = displayID
         tracker.screen = CGRect(x: frame.minX, y: primaryHeight - frame.maxY, width: frame.width, height: frame.height)
+        tracker.primaryHeight = primaryHeight
         tracker.menuBarHeight = frame.maxY - screen.visibleFrame.maxY
         tracker.reset()
         let others = NSScreen.screens.map(\.frame).filter { $0 != frame && $0.maxY > frame.minY && $0.minY < frame.maxY }
@@ -284,6 +507,8 @@ final class ScreenSnow {
             left: !others.contains { abs($0.maxX - frame.minX) < 1 },
             right: !others.contains { abs($0.minX - frame.maxX) < 1 }
         )
+        simulation.openSides = (!simulation.walls.left, !simulation.walls.right)
+        simulation.neighbours = displays.spanning ? simulation.openSides : (false, false)
     }
 
     private static func makeView(device: MTLDevice, size: CGSize) -> MTKView {
@@ -298,6 +523,32 @@ final class ScreenSnow {
         view.autoResizeDrawable = false
         Renderer.fitDrawable(of: view)
         return view
+    }
+}
+
+/// The New Year's tree's own layer, drawn at the screen's full resolution: the snow is drawn at one pixel a point.
+final class TreeView: NSView {
+    let metalLayer = CAMetalLayer()
+
+    init(device: MTLDevice) {
+        super.init(frame: .zero)
+        metalLayer.device = device
+        metalLayer.pixelFormat = .bgra8Unorm
+        metalLayer.isOpaque = false
+        metalLayer.framebufferOnly = true
+        wantsLayer = true
+        isHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func makeBackingLayer() -> CALayer { metalLayer }
+
+    func fit(_ frame: CGRect, scale: CGFloat) {
+        self.frame = frame
+        metalLayer.contentsScale = scale
+        metalLayer.drawableSize = CGSize(width: frame.width * scale, height: frame.height * scale)
     }
 }
 

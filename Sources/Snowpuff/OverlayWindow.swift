@@ -1,14 +1,25 @@
 import AppKit
 
 final class OverlayWindow: NSWindow {
-    private static let desktopLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
+    /// Behind the windows, but over the snow lying in the wallpaper.
+    private static let desktopLevel = NSWindow.Level(rawValue: PictureWindow.desktopLevel.rawValue + 1)
     /// Just under the Dock, so its icons stay in front as they grow under the pointer.
     static let belowDockLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) - 1)
 
     private let frontLevel: NSWindow.Level
 
     var behindWindows = false {
-        didSet { level = behindWindows ? Self.desktopLevel : frontLevel }
+        didSet { placeLevel() }
+    }
+
+    /// The level of Notification Center's window while it is up: the snow goes just under it, so the banners and the
+    /// opened panel stay in front of the snow, and the snow on the windows behind them out of sight.
+    var notificationLevel: Int? {
+        didSet { if notificationLevel != oldValue { placeLevel() } }
+    }
+
+    private func placeLevel() {
+        level = behindWindows ? Self.desktopLevel : notificationLevel.map { NSWindow.Level(rawValue: min($0 - 1, frontLevel.rawValue)) } ?? frontLevel
     }
 
     var showsInScreenshots = false {

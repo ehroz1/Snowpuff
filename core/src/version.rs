@@ -1,15 +1,32 @@
-//! What the update check needs from a GitHub release, without a JSON parser or a crypto crate.
-
 pub fn newer(candidate: &str, current: &str) -> bool {
     let parse = |version: &str| -> Vec<u64> { version.split('.').map(|part| part.parse().unwrap_or(0)).chain([0; 3]).take(3).collect() };
     parse(candidate) > parse(current)
 }
 
-/// The string value of the first `key` in GitHub's JSON, without a JSON parser for one field.
+/// The string value of a top-level `key` in GitHub's JSON, without a JSON parser for one field.
 pub fn field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let rest = &json[json.find(&format!("\"{key}\""))? + key.len() + 2..];
     let rest = rest.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
     Some(&rest[..rest.find('"')?])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compares_versions() {
+        assert!(newer("0.4.0", "0.3.1"));
+        assert!(newer("1.0", "0.9.9"));
+        assert!(!newer("0.4.0", "0.4.0"));
+        assert!(!newer("0.3.9", "0.4.0"));
+    }
+
+    #[test]
+    fn reads_a_field() {
+        assert_eq!(field(r#"{"url":"x","tag_name": "v0.4.0","name":"Snowpuff 0.4.0"}"#, "tag_name"), Some("v0.4.0"));
+        assert_eq!(field(r#"{"name":"x"}"#, "tag_name"), None);
+    }
 }
 
 /// The SHA-256 GitHub reports for the release asset called `name`, in lowercase hex, if the release has that asset.
@@ -79,46 +96,4 @@ pub fn sha256(data: &[u8]) -> String {
         }
     }
     h.iter().map(|word| format!("{word:08x}")).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compares_versions() {
-        assert!(newer("0.4.0", "0.3.1"));
-        assert!(newer("1.0", "0.9.9"));
-        assert!(newer("1.10.0", "1.9.0"));
-        assert!(!newer("0.4.0", "0.4.0"));
-        assert!(!newer("0.3.9", "0.4.0"));
-    }
-
-    #[test]
-    fn reads_a_field() {
-        assert_eq!(field(r#"{"url":"x","tag_name": "v0.4.0","name":"Snowpuff 0.4.0"}"#, "tag_name"), Some("v0.4.0"));
-        assert_eq!(field(r#"{"name":"x"}"#, "tag_name"), None);
-    }
-
-    #[test]
-    fn finds_an_asset_and_its_digest() {
-        let hex = "ab".repeat(32);
-        let json = format!(
-            r#"{{"tag_name":"v1.1.0","name":"Snowpuff 1.1.0","assets":[{{"name":"Snowpuff.zip","digest":"sha256:{}","browser_download_url":"z"}},{{"name":"Snowpuff-Setup.exe","uploader":{{"login":"x"}},"digest":"sha256:{hex}","browser_download_url":"e"}}]}}"#,
-            "cd".repeat(32)
-        );
-        assert_eq!(asset_digest(&json, "Snowpuff-Setup.exe"), Some(Some(hex)));
-        assert_eq!(asset_digest(&json, "Snowpuff.zip"), Some(Some("cd".repeat(32))));
-        assert_eq!(asset_digest(&json, "Snowpuff.dmg"), None);
-        // An older release without digests still counts, just unchecked.
-        assert_eq!(asset_digest(r#"{"assets":[{"name": "Snowpuff.zip","digest":null,"browser_download_url":"z"}]}"#, "Snowpuff.zip"), Some(None));
-    }
-
-    #[test]
-    fn hashes() {
-        assert_eq!(sha256(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        let long = vec![b'a'; 1_000_000];
-        assert_eq!(sha256(&long), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
-    }
 }

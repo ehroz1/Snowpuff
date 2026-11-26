@@ -1,20 +1,23 @@
-use std::cell::Cell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Once, OnceLock};
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
-    DWM_WINDOW_CORNER_PREFERENCE, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUNDSMALL,
-    DwmGetWindowAttribute,
+    DWM_WINDOW_CORNER_PREFERENCE, DWMSBT_TRANSIENTWINDOW, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUNDSMALL, DwmGetWindowAttribute,
 };
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
 use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::Shell::{
     IVirtualDesktopManager, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState, VirtualDesktopManager,
 };
@@ -22,8 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PWSTR, w};
 
 use snowpuff_core::geometry::Rect;
-use snowpuff_core::rain::RainWindow;
-use snowpuff_core::simulation::WindowSurface;
+use snowpuff_core::simulation::{COLUMN_WIDTH, WindowSurface};
 
 use crate::log;
 use crate::screen::Clock;
@@ -66,18 +68,52 @@ static SHELL_BUSY: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static EVENTS: Cell<Events> = const { Cell::new(Events { changed: true, moving: false, started_moving: false }) };
+    static NOTICED: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
 }
 
 struct Window {
     id: isize,
     class: String,
-    /// The visible frame in physical pixels, without the invisible resize border.
     rect: RECT,
     radius: f32,
     cover_only: bool,
     topmost: bool,
     zoomed: bool,
+    /// Neither layered nor drawn by composition, either of which can leave parts of it see-through.
+    opaque: bool,
+    toast: bool,
+    sweeps: bool,
+    hold: bool,
+    slide: f32,
+    /// The toast card in a toast's window, which is all of the window that shows.
+    card: RECT,
+    travel: f32,
 }
+
+struct Arrival {
+    at: i64,
+    left: i32,
+    right: i32,
+    moved: bool,
+    model: bool,
+    travel: f32,
+    samples: u8,
+    started: bool,
+    /// One full scrape of the toast band has already run.
+    swept: bool,
+}
+
+/// The rubber band a drag across the desktop's empty space draws to select icons. It has no window of its own, being
+/// drawn into the desktop's icon view, so it is followed from the mouse: from where the button went down to the pointer.
+#[derive(Default)]
+struct Marquee {
+    /// Where the button went down, and whether on the desktop's icon view.
+    pressed: Option<(POINT, bool)>,
+    rect: Option<RECT>,
+}
+
+/// A surface id no window has: the rubber band's.
+const MARQUEE: isize = isize::MIN + 1;
 
 /// The windows on screen, front to back, re-read when the system reports a window moving, showing, hiding,
 /// minimizing or changing desktops, and twice a second in case a report went missing.
@@ -88,10 +124,16 @@ pub struct Tracker {
     own_process: u32,
     windows: Vec<Window>,
     listed_at: i64,
-    /// The shell's own sense that a full-screen app or presentation is in front.
-    busy: bool,
     pub generation: u64,
+    /// The displays by name, with their work areas and bounds in physical pixels.
+    displays: Vec<(String, RECT, RECT)>,
+    /// The display each window's snow lies on, by name.
+    pub owners: HashMap<isize, String>,
     seen: HashSet<isize>,
+    marquee: Marquee,
+    arrivals: HashMap<isize, Arrival>,
+    shells: HashMap<u32, bool>,
+    animating: bool,
     pub listings: u32,
     pub cost: i64,
 }
@@ -120,9 +162,14 @@ impl Tracker {
             own_process: std::process::id(),
             windows: Vec::new(),
             listed_at: 0,
-            busy: false,
             generation: 0,
+            displays: Vec::new(),
+            owners: HashMap::new(),
             seen: HashSet::new(),
+            marquee: Marquee::default(),
+            arrivals: HashMap::new(),
+            shells: HashMap::new(),
+            animating: false,
             listings: 0,
             cost: 0,
         }
@@ -131,18 +178,115 @@ impl Tracker {
     /// Re-reads the window list if anything may have changed; returns whether it did.
     pub fn refresh(&mut self, clock: &Clock, now: i64) -> bool {
         let events = EVENTS.get();
-        if !events.changed && clock.seconds(now - self.listed_at) < 0.5 {
+        let due = events.changed || clock.seconds(now - self.listed_at) >= 0.5;
+        if !due && !self.animating {
             return false;
         }
         EVENTS.set(Events { changed: false, ..events });
-        let began = Clock::now();
-        self.windows = self.list();
-        self.busy = SHELL_BUSY.load(Ordering::Relaxed);
-        self.cost += Clock::now() - began;
-        self.listings += 1;
-        self.listed_at = now;
-        self.generation += 1;
+        if due {
+            let began = Clock::now();
+            self.windows = self.list();
+            self.owners = self.windows.iter().filter_map(|window| Some((window.id, self.owner(&window.rect)?.to_string()))).collect();
+            let maximized_filling = self
+                .windows
+                .iter()
+                .any(|window| window.zoomed && !window.cover_only && self.displays.iter().any(|(_, _, bounds)| contains(&window.rect, bounds)));
+            watch_shell_for(maximized_filling);
+            self.cost += Clock::now() - began;
+            self.listings += 1;
+            self.listed_at = now;
+            self.generation += 1;
+        }
+        self.note_toasts(clock, now);
         true
+    }
+
+    /// Follows a rubber band being dragged out on the desktop, from the primary button and the pointer; returns whether
+    /// it changed. Dragging an icon instead shows the shell's drag image, and draws no band.
+    pub fn follow_marquee(&mut self) -> bool {
+        let primary = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 { VK_RBUTTON } else { VK_LBUTTON };
+        let held = unsafe { GetAsyncKeyState(primary.0 as i32) } as u16 & 0x8000 != 0;
+        let mut cursor = POINT::default();
+        if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+            return false;
+        }
+        let before = self.marquee.rect;
+        match self.marquee.pressed {
+            _ if !held => self.marquee = Marquee::default(),
+            None => self.marquee.pressed = Some((cursor, on_desktop(cursor))),
+            Some((anchor, true)) => {
+                let slack = unsafe { (GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)) };
+                let dragged = (cursor.x - anchor.x).abs() > slack.0 || (cursor.y - anchor.y).abs() > slack.1;
+                let icon = unsafe { FindWindowW(w!("SysDragImage"), None) }.is_ok_and(|image| unsafe { IsWindowVisible(image) }.as_bool());
+                self.marquee.rect = (dragged && !icon).then(|| RECT {
+                    left: anchor.x.min(cursor.x),
+                    top: anchor.y.min(cursor.y),
+                    right: anchor.x.max(cursor.x),
+                    bottom: anchor.y.max(cursor.y),
+                });
+            }
+            Some((_, false)) => {}
+        }
+        let changed = self.marquee.rect != before;
+        if changed {
+            self.generation += 1;
+        }
+        changed
+    }
+
+    /// Forgets the rubber band, as when it is no longer followed.
+    pub fn drop_marquee(&mut self) {
+        if std::mem::take(&mut self.marquee).rect.is_some() {
+            self.generation += 1;
+        }
+    }
+
+    pub fn animating(&self) -> bool {
+        self.animating
+    }
+
+    /// The displays to tell windows' snow apart by: name, work area and bounds, in physical pixels.
+    pub fn set_displays<'a>(&mut self, displays: impl Iterator<Item = (&'a str, RECT, RECT)> + Clone) {
+        let known = &self.displays;
+        if displays.clone().count() == known.len()
+            && displays.clone().zip(known).all(|(display, (name, area, bounds))| display == (name.as_str(), *area, *bounds))
+        {
+            return;
+        }
+        self.displays = displays.map(|(name, area, bounds)| (name.to_string(), area, bounds)).collect();
+        self.owners = self.windows.iter().filter_map(|window| Some((window.id, self.owner(&window.rect)?.to_string()))).collect();
+    }
+
+    /// The display a window's snow lies on: of those its top edge runs along, the one holding most of the window, as
+    /// the system picks the display whose scale the window takes. Each display has a simulation of its own, and the
+    /// window's snow is handed over as it moves to another.
+    fn owner(&self, r: &RECT) -> Option<&str> {
+        let held = |area: &RECT| {
+            (r.right.min(area.right) - r.left.max(area.left)).max(0) as i64 * (r.bottom.min(area.bottom) - r.top.max(area.top)).max(0) as i64
+        };
+        self.displays
+            .iter()
+            .filter(|(_, area, _)| r.top >= area.top && r.top < area.bottom && r.left < area.right && r.right > area.left)
+            .max_by_key(|(_, _, bounds)| held(bounds))
+            .map(|(name, _, _)| name.as_str())
+    }
+
+    /// Whether the window's top edge lies along the top of display `name`, right under another display, where its
+    /// snow has room to stand.
+    fn below_display(&self, name: &str, r: &RECT, sy: f32) -> bool {
+        let Some((_, area, bounds)) = self.displays.iter().find(|(other, _, _)| other == name) else { return false };
+        area.top == bounds.top
+            && r.top >= area.top
+            && ((r.top - area.top) as f32 * sy) < 6.0
+            && self
+                .displays
+                .iter()
+                .any(|(other, _, above)| other != name && above.bottom == bounds.top && above.left < r.right && above.right > r.left)
+    }
+
+    /// A listed window's frame in physical pixels.
+    pub fn rect(&self, id: isize) -> Option<RECT> {
+        self.windows.iter().find(|window| window.id == id).map(|window| window.rect)
     }
 
     /// Whether a window is being dragged or resized right now.
@@ -157,26 +301,41 @@ impl Tracker {
         events.started_moving
     }
 
-    /// The windows on one display that snow can settle on, in its overlay coordinates.
-    /// `area` is the display's work area in physical pixels, `size` the overlay's size in DIPs.
-    pub fn surfaces(&self, area: &RECT, size: (u32, u32)) -> Vec<WindowSurface> {
+    /// The windows on display `name` that snow can settle on, in its overlay coordinates. `area` is the display's work
+    /// area in physical pixels, `size` the overlay's size in DIPs. Windows whose snow lies on another display only hide
+    /// snow here.
+    pub fn surfaces(&self, name: &str, area: &RECT, size: (u32, u32)) -> Vec<WindowSurface> {
         let (width, height) = (size.0 as f32, size.1 as f32);
         let sy = height / (area.bottom - area.top).max(1) as f32;
         let mut blockers: Vec<Rect> = Vec::new();
         let mut surfaces = Vec::new();
         for window in &self.windows {
-            let Some(frame) = local_frame(&window.rect, area, size) else { continue };
-            let r = &window.rect;
-            let room_above = (r.top - area.top) as f32 * sy >= 6.0 && frame.max_y() < height;
-            let on_screen = frame.max_x() > 0.0 && frame.min_x() < width && frame.max_y() > 0.0;
+            let frame = frame_in(&window.rect, area, size);
             let fills_screen = frame.width * frame.height >= width * height * 0.9;
-            if room_above && on_screen && !fills_screen && !window.cover_only && frame.width >= 80.0 && frame.height >= 40.0 {
+            // A toast carries no snow; only its card hides what lies behind it.
+            if window.toast {
+                blockers.extend(local_frame(&window.card, area, size));
+                continue;
+            }
+            // One on a neighbouring display still hides the snow of a window here reaching over there.
+            if !overlaps(&window.rect, area) {
+                if !(window.cover_only && fills_screen) {
+                    blockers.push(frame);
+                }
+                continue;
+            }
+            let r = &window.rect;
+            let room_above = ((r.top - area.top) as f32 * sy >= 6.0 && frame.max_y() < height) || self.below_display(name, r, sy);
+            let on_screen = frame.max_x() > 0.0 && frame.min_x() < width && frame.max_y() > 0.0;
+            let here = self.owners.get(&window.id).is_none_or(|owner| owner == name);
+            if here && room_above && on_screen && !fills_screen && !window.cover_only && frame.width >= 80.0 && frame.height >= 40.0 {
                 let radius = window.radius.min(frame.width / 2.0).min(frame.height / 2.0);
                 let region = Rect { x: frame.x, y: frame.max_y() - radius, width: frame.width, height: 40.0 + radius };
                 surfaces.push(WindowSurface {
                     id: window.id,
                     frame,
                     blockers: blockers.iter().filter(|b| intersects(b, &region)).copied().collect(),
+                    cover: blockers.iter().filter(|b| intersects(b, &frame)).copied().collect(),
                     corner_radius: radius,
                     corner_exponent: 2.0,
                 });
@@ -186,68 +345,41 @@ impl Tracker {
                 blockers.push(frame);
             }
         }
+        // The rubber band lies on the desktop, behind every window, and hides nothing: it is see-through. However thin,
+        // its top edge holds snow, as wide as the simulation keeps a ledge.
+        if let Some(frame) = self.marquee.rect.as_ref().and_then(|rect| local_frame(rect, area, size))
+            && frame.width >= 8.0 * COLUMN_WIDTH
+            && frame.max_y() < height
+        {
+            let region = Rect { x: frame.x, y: frame.max_y(), width: frame.width, height: 40.0 };
+            surfaces.push(WindowSurface {
+                id: MARQUEE,
+                frame,
+                blockers: blockers.iter().filter(|b| intersects(b, &region)).copied().collect(),
+                cover: blockers.iter().filter(|b| intersects(b, &frame)).copied().collect(),
+                corner_radius: 0.0,
+                corner_exponent: 2.0,
+            });
+        }
         surfaces
     }
 
-    /// The windows rain lands on and runs down, each with the frames of every window in front of it.
-    pub fn rain_windows(&self, area: &RECT, size: (u32, u32)) -> Vec<RainWindow> {
-        let (width, height) = (size.0 as f32, size.1 as f32);
-        let sy = height / (area.bottom - area.top).max(1) as f32;
-        let mut fronts: Vec<Rect> = Vec::new();
-        let mut windows = Vec::new();
-        for window in &self.windows {
-            let Some(frame) = local_frame(&window.rect, area, size) else { continue };
-            let room_above = (window.rect.top - area.top) as f32 * sy >= 6.0 && frame.max_y() < height;
-            let on_screen = frame.max_x() > 0.0 && frame.min_x() < width && frame.max_y() > 0.0;
-            let fills_screen = frame.width * frame.height >= width * height * 0.9;
-            if room_above && on_screen && !fills_screen && !window.cover_only && frame.width >= 80.0 && frame.height >= 40.0 {
-                windows.push(RainWindow { id: window.id, frame, fronts: fronts.clone(), ledge_only: false });
-            }
-            if !(window.cover_only && fills_screen) {
-                fronts.push(frame);
-            }
-        }
-        windows
-    }
-
-    /// The windows icicles hang from, with the frames of the windows in front of each along its bottom edge.
-    pub fn eaves(&self, area: &RECT, size: (u32, u32)) -> Vec<(WindowSurface, Vec<Rect>)> {
-        // Front to back, so the windows in front of one are those listed before it.
-        let mut frames: Vec<(isize, Rect)> = Vec::new();
-        for window in &self.windows {
-            let Some(frame) = local_frame(&window.rect, area, size) else { continue };
-            let fills_screen = frame.width * frame.height >= size.0 as f32 * size.1 as f32 * 0.9;
-            if !(window.cover_only && fills_screen) {
-                frames.push((window.id, frame));
-            }
-        }
-        self.surfaces(area, size)
-            .into_iter()
-            .map(|surface| {
-                let under = Rect { x: surface.frame.x, y: surface.frame.y - 40.0, width: surface.frame.width, height: 42.0 };
-                let covering = frames
-                    .iter()
-                    .take_while(|(id, _)| *id != surface.id)
-                    .map(|(_, frame)| *frame)
-                    .filter(|frame| intersects(frame, &under))
-                    .collect();
-                (surface, covering)
+    /// The cards of the toasts sliding in on one display, in its overlay coordinates.
+    pub fn toast_sweeps(&self, area: &RECT, size: (u32, u32)) -> Vec<(isize, Rect)> {
+        let sx = size.0 as f32 / (area.right - area.left).max(1) as f32;
+        self.windows
+            .iter()
+            .filter(|window| window.toast && window.sweeps)
+            .filter_map(|window| {
+                let card = local_frame(&window.card, area, size)?;
+                // Windows puts the toast's window where it ends up at once, so its slide in is modelled.
+                Some((window.id, Rect { x: card.x + window.slide * sx, ..card }))
             })
             .collect()
     }
 
-    /// The foreground window on this display, in its overlay coordinates, for its warm glow: none while it fills the
-    /// display, is one of the shell's own, or is elsewhere.
-    pub fn focused(&self, area: &RECT, size: (u32, u32)) -> Option<Rect> {
-        let foreground = unsafe { GetForegroundWindow() }.0 as isize;
-        let window = self.windows.iter().find(|window| window.id == foreground && !window.cover_only)?;
-        let frame = local_frame(&window.rect, area, size)?;
-        let fills = frame.width * frame.height >= size.0 as f32 * size.1 as f32 * 0.9;
-        (!fills && frame.width >= 80.0 && frame.height >= 40.0).then_some(frame)
-    }
-
     /// Every app window on one display, maximized and full-screen ones too, left, bottom, right, top in its overlay
-    /// coordinates. Open menus and the shell's switchers and flyouts don't count.
+    /// coordinates: a pumpkin hides from any that covers it. Open menus and the shell's switchers and flyouts don't count.
     pub fn covers(&self, area: &RECT, size: (u32, u32)) -> Vec<[f32; 4]> {
         self.windows
             .iter()
@@ -263,13 +395,13 @@ impl Tracker {
     /// taskbar hides itself.
     pub fn covering(&self, bounds: &RECT) -> Option<&str> {
         let foreground = unsafe { GetForegroundWindow() }.0 as isize;
+        let busy = SHELL_BUSY.load(Ordering::Relaxed);
         for window in &self.windows {
             let r = &window.rect;
             if window.cover_only || r.right <= bounds.left || r.left >= bounds.right || r.bottom <= bounds.top || r.top >= bounds.bottom {
                 continue;
             }
-            let fills = r.left <= bounds.left && r.top <= bounds.top && r.right >= bounds.right && r.bottom >= bounds.bottom;
-            if fills && (!window.zoomed || (self.busy && window.id == foreground)) {
+            if contains(r, bounds) && (!window.zoomed || (busy && window.id == foreground)) {
                 return Some(&window.class);
             }
             if !window.topmost {
@@ -277,6 +409,20 @@ impl Tracker {
             }
         }
         None
+    }
+
+    /// Whether an opaque window covers all of this area, so that nothing behind the windows shows in it.
+    /// Acrylic shows what is behind it, blurred; Mica only shows the desktop picture.
+    pub fn hides(&self, area: &RECT) -> bool {
+        self.windows.iter().any(|window| {
+            let mut backdrop = 0i32;
+            window.opaque
+                && !window.cover_only
+                && contains(&window.rect, area)
+                && !(unsafe { DwmGetWindowAttribute(HWND(window.id as *mut c_void), DWMWA_SYSTEMBACKDROP_TYPE, (&raw mut backdrop).cast(), 4) }
+                    .is_ok()
+                    && backdrop == DWMSBT_TRANSIENTWINDOW.0)
+        })
     }
 
     /// Whether a listed window covers most of this display's work area, in physical pixels, as when maximized or full screen.
@@ -287,6 +433,11 @@ impl Tracker {
             let height = (r.bottom.min(area.bottom) - r.top.max(area.top)).max(0) as i64;
             window.id == id && width * height * 10 >= (area.right - area.left) as i64 * (area.bottom - area.top) as i64 * 9
         })
+    }
+
+    /// Whether a window still exists, wherever it is.
+    pub fn exists(&self, id: isize) -> bool {
+        unsafe { IsWindow(Some(HWND(id as *mut c_void))).as_bool() }
     }
 
     /// Whether a window that left the list moved to another virtual desktop, rather than closing or hiding.
@@ -308,6 +459,15 @@ impl Tracker {
         unsafe {
             let _ = EnumWindows(Some(collect), LPARAM(&raw mut handles as isize));
         }
+        NOTICED.with(|noticed| {
+            let mut noticed = noticed.borrow_mut();
+            noticed.retain(|window| unsafe { IsWindow(Some(*window)).as_bool() });
+            for window in noticed.iter().rev() {
+                if !handles.contains(window) {
+                    handles.insert(0, *window);
+                }
+            }
+        });
         handles.into_iter().filter_map(|window| self.describe(window)).collect()
     }
 
@@ -342,7 +502,10 @@ impl Tracker {
             if IGNORED.contains(&class.as_str()) {
                 return None;
             }
-            let rect = frame(window)?;
+            let mut rect = frame(window)?;
+            if class == POPUP_BRIDGE {
+                rect = popup_panel(window, rect);
+            }
             if rect.right - rect.left < 2 || rect.bottom - rect.top < 2 {
                 return None;
             }
@@ -350,18 +513,21 @@ impl Tracker {
             if self.seen.len() > 4096 {
                 self.seen.clear();
             }
+            let toast = self.toast_banner(window, &class, process, &rect) && near_right(window, &rect);
             if self.seen.insert(id) {
                 log!(
-                    "window {class} of {}: {}x{} at {},{}",
+                    "window {class} of {}: {}x{} at {},{}{}",
                     process_name(process),
                     rect.right - rect.left,
                     rect.bottom - rect.top,
                     rect.left,
-                    rect.top
+                    rect.top,
+                    if toast { " toast" } else { "" }
                 );
             }
             let zoomed = IsZoomed(window).as_bool();
             let radius = if self.rounded && !zoomed { corner_radius(window) } else { 0.0 };
+            let scale = if toast { GetDpiForWindow(window).max(96) as f32 / 96.0 } else { 1.0 };
             Some(Window {
                 id,
                 cover_only: COVER_ONLY.contains(&class.as_str()),
@@ -370,8 +536,114 @@ impl Tracker {
                 radius,
                 topmost: extended & WS_EX_TOPMOST.0 != 0,
                 zoomed,
+                opaque: extended & (WS_EX_LAYERED.0 | WS_EX_NOREDIRECTIONBITMAP.0) == 0,
+                toast,
+                sweeps: false,
+                hold: false,
+                slide: 0.0,
+                card: if toast { toast_card(&rect, scale) } else { rect },
+                travel: if toast { (rect.right - rect.left) as f32 + TOAST_MARGIN.0 * scale } else { 0.0 },
             })
         }
+    }
+
+    fn toast_banner(&mut self, window: HWND, class: &str, process: u32, rect: &RECT) -> bool {
+        if class != "Windows.UI.Core.CoreWindow" || !self.shell(process) {
+            return false;
+        }
+        let dpi = unsafe { GetDpiForWindow(window) }.max(96) as i32;
+        let width = (rect.right - rect.left) * 96 / dpi;
+        let height = (rect.bottom - rect.top) * 96 / dpi;
+        (200..=600).contains(&width) && (48..=440).contains(&height)
+    }
+
+    fn shell(&mut self, process: u32) -> bool {
+        if let Some(&known) = self.shells.get(&process) {
+            return known;
+        }
+        let name = process_name(process);
+        let shell = name.eq_ignore_ascii_case("ShellExperienceHost.exe") || name.eq_ignore_ascii_case("ShellHost.exe");
+        if self.shells.len() > 64 {
+            self.shells.clear();
+        }
+        self.shells.insert(process, shell);
+        shell
+    }
+
+    fn note_toasts(&mut self, clock: &Clock, now: i64) {
+        let animate = motion_enabled();
+        self.animating = false;
+        let mut alive = HashSet::new();
+        for i in 0..self.windows.len() {
+            if !self.windows[i].toast {
+                self.windows[i].sweeps = false;
+                self.windows[i].hold = false;
+                self.windows[i].slide = 0.0;
+                continue;
+            }
+            let id = self.windows[i].id;
+            let rect = self.windows[i].rect;
+            let travel = self.windows[i].travel;
+            alive.insert(id);
+            let (hold, slide, sweeps) = {
+                let arrival = self.arrivals.entry(id).or_insert(Arrival {
+                    at: now,
+                    left: rect.left,
+                    right: rect.right,
+                    moved: false,
+                    model: false,
+                    travel,
+                    samples: 0,
+                    started: false,
+                    swept: false,
+                });
+                if arrival.samples == 0 {
+                    // Windows usually parks the toast at its final rect; always model a slide when motion is on
+                    // so the shove spreads instead of dumping one cliff against the left edge.
+                    arrival.model = animate;
+                    arrival.travel = travel;
+                    arrival.left = rect.left;
+                    arrival.right = rect.right;
+                }
+                arrival.samples = arrival.samples.saturating_add(1);
+                let shifted = (rect.left - arrival.left).abs() > 2 || (rect.right - arrival.right).abs() > 2;
+                if shifted {
+                    arrival.moved = true;
+                    arrival.left = rect.left;
+                    arrival.right = rect.right;
+                }
+                if arrival.model && !arrival.moved {
+                    if arrival.samples < 2 {
+                        (true, 0.0, false)
+                    } else {
+                        if !arrival.started {
+                            arrival.started = true;
+                            arrival.at = now;
+                        }
+                        let offset = arrival.travel * (-(clock.seconds(now - arrival.at) as f32) / 0.064).exp();
+                        let slide = if offset < 0.5 { 0.0 } else { offset };
+                        if slide <= 0.5 {
+                            arrival.swept = true;
+                        }
+                        (false, slide, slide > 0.5)
+                    }
+                } else {
+                    // Toast already sitting still: scrape the whole band once so no drift stays behind it.
+                    let pending = !arrival.swept;
+                    if pending {
+                        arrival.swept = true;
+                    }
+                    (false, 0.0, pending || shifted)
+                }
+            };
+            self.windows[i].hold = hold;
+            self.windows[i].slide = slide;
+            self.windows[i].sweeps = sweeps;
+            if hold || slide > 0.0 || sweeps {
+                self.animating = true;
+            }
+        }
+        self.arrivals.retain(|id, _| alive.contains(id));
     }
 }
 
@@ -399,7 +671,15 @@ unsafe extern "system" fn on_event(_: HWINEVENTHOOK, event: u32, window: HWND, o
         }
         // A taskbar set to hide itself moves on every frame of its slide, and the list leaves it out anyway.
         _ if object == OBJID_WINDOW.0 && child == 0 && is_top_level(window, event) && !IGNORED.contains(&class_name(window).as_str()) => {
-            events.changed = true
+            events.changed = true;
+            if class_name(window) == "Windows.UI.Core.CoreWindow" {
+                NOTICED.with(|noticed| {
+                    let mut noticed = noticed.borrow_mut();
+                    if !noticed.contains(&window) {
+                        noticed.push(window);
+                    }
+                });
+            }
         }
         _ => return,
     }
@@ -417,26 +697,79 @@ fn is_top_level(window: HWND, event: u32) -> bool {
     }
 }
 
+static SHELL_WATCHED: AtomicBool = AtomicBool::new(true);
+/// Whether a maximized window fills a display, the only case the shell's answer is used for.
+static SHELL_NEEDED: AtomicBool = AtomicBool::new(false);
+static SHELL_WATCHER: OnceLock<std::thread::Thread> = OnceLock::new();
+
 /// Asking the shell can stall for a fifth of a second while it is busy, sliding a hidden taskbar in or out for one,
 /// so it is asked on a thread of its own rather than between frames.
 fn watch_shell() {
     static START: Once = Once::new();
     START.call_once(|| {
         let _ = std::thread::Builder::new().name("shell state".into()).spawn(|| {
+            let _ = SHELL_WATCHER.set(std::thread::current());
             let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
             loop {
+                if !SHELL_WATCHED.load(Ordering::Relaxed) || !SHELL_NEEDED.load(Ordering::Relaxed) {
+                    SHELL_BUSY.store(false, Ordering::Relaxed);
+                    std::thread::park();
+                    continue;
+                }
                 let busy = unsafe { SHQueryUserNotificationState() }
                     .is_ok_and(|state| matches!(state, QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE));
                 SHELL_BUSY.store(busy, Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::park_timeout(Duration::from_millis(250));
             }
         });
     });
 }
 
+/// Keeps asking the shell only while the snow is drawn: locked or asleep, there is no full-screen app to keep out of.
+pub fn watch_shell_state(on: bool) {
+    SHELL_WATCHED.store(on, Ordering::Relaxed);
+    if on && let Some(watcher) = SHELL_WATCHER.get() {
+        watcher.unpark();
+    }
+}
+
+fn watch_shell_for(needed: bool) {
+    if !SHELL_NEEDED.swap(needed, Ordering::Relaxed)
+        && needed
+        && let Some(watcher) = SHELL_WATCHER.get()
+    {
+        watcher.unpark();
+    }
+}
+
 pub fn cloaked(window: HWND) -> bool {
     let mut cloaked = 0u32;
     unsafe { DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4) }.is_ok() && cloaked != 0
+}
+
+/// Explorer's menus on the Windows App SDK: their window takes in a clear margin around the panel for its shadow, and
+/// neither the window nor any child of it tells where the panel is.
+const POPUP_BRIDGE: &str = "Microsoft.UI.Content.PopupWindowSiteBridge";
+
+/// The panel inside such a menu's window, its margin measured at 100% (left, top, right, bottom) and scaled to the window's.
+fn popup_panel(window: HWND, rect: RECT) -> RECT {
+    const MARGIN: [f32; 4] = [10.0, 3.0, 10.0, 10.0];
+    let scale = unsafe { GetDpiForWindow(window) } as f32 / 96.0;
+    let inset = |side: usize| (MARGIN[side] * scale).round() as i32;
+    RECT { left: rect.left + inset(0), top: rect.top + inset(1), right: rect.right - inset(2), bottom: rect.bottom - inset(3) }
+}
+
+/// Whether the desktop's icon view is under this point, its empty space or an icon.
+fn on_desktop(point: POINT) -> bool {
+    unsafe {
+        let view = WindowFromPoint(point);
+        if view.is_invalid() || class_name(view) != "SysListView32" {
+            return false;
+        }
+        let Ok(shell) = GetParent(view) else { return false };
+        let Ok(host) = GetParent(shell) else { return false };
+        class_name(shell) == "SHELLDLL_DefView" && matches!(class_name(host).as_str(), "Progman" | "WorkerW")
+    }
 }
 
 fn frame(window: HWND) -> Option<RECT> {
@@ -480,7 +813,7 @@ pub fn process_name(process: u32) -> String {
     }
 }
 
-fn windows_build() -> u32 {
+pub fn windows_build() -> u32 {
     let mut buffer = [0u16; 32];
     let mut size = (buffer.len() * 2) as u32;
     let status = unsafe {
@@ -503,20 +836,66 @@ fn windows_build() -> u32 {
 
 /// A window's frame in the overlay coordinates of the display with work area `area` and an overlay `size` DIPs across,
 /// if any of it is on that display.
-fn local_frame(r: &RECT, area: &RECT, size: (u32, u32)) -> Option<Rect> {
-    if r.right <= area.left || r.left >= area.right || r.bottom <= area.top || r.top >= area.bottom {
-        return None;
-    }
+pub fn local_frame(r: &RECT, area: &RECT, size: (u32, u32)) -> Option<Rect> {
+    overlaps(r, area).then(|| frame_in(r, area, size))
+}
+
+/// A window's frame in the overlay coordinates of the display with work area `area` and an overlay `size` DIPs across,
+/// wherever it is.
+fn frame_in(r: &RECT, area: &RECT, size: (u32, u32)) -> Rect {
     let sx = size.0 as f32 / (area.right - area.left).max(1) as f32;
     let sy = size.1 as f32 / (area.bottom - area.top).max(1) as f32;
-    Some(Rect {
+    Rect {
         x: (r.left - area.left) as f32 * sx,
         y: (area.bottom - r.bottom) as f32 * sy,
         width: (r.right - r.left) as f32 * sx,
         height: (r.bottom - r.top) as f32 * sy,
-    })
+    }
+}
+
+fn contains(r: &RECT, area: &RECT) -> bool {
+    r.left <= area.left && r.top <= area.top && r.right >= area.right && r.bottom >= area.bottom
+}
+
+fn overlaps(r: &RECT, area: &RECT) -> bool {
+    r.right > area.left && r.left < area.right && r.bottom > area.top && r.top < area.bottom
 }
 
 fn intersects(a: &Rect, b: &Rect) -> bool {
     a.min_x() < b.max_x() && b.min_x() < a.max_x() && a.min_y() < b.max_y() && b.min_y() < a.max_y()
+}
+
+/// The room ShellExperienceHost's window leaves around the toast card in it, at the sides, above and below, in pixels
+/// at 96 dpi: measured on Windows 11.
+const TOAST_MARGIN: (f32, f32, f32) = (16.0, 30.0, 15.0);
+
+fn toast_card(rect: &RECT, scale: f32) -> RECT {
+    let (side, above, below) = TOAST_MARGIN;
+    let side = (side * scale).round() as i32;
+    RECT {
+        left: rect.left + side,
+        top: rect.top + (above * scale).round() as i32,
+        right: rect.right - side,
+        bottom: rect.bottom - (below * scale).round() as i32,
+    }
+}
+
+fn near_right(window: HWND, rect: &RECT) -> bool {
+    unsafe {
+        let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return true;
+        }
+        let work = info.rcWork;
+        (work.right - rect.right).abs() <= 48
+    }
+}
+
+fn motion_enabled() -> bool {
+    unsafe {
+        let mut enabled = BOOL(0);
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&raw mut enabled).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).is_ok()
+            && enabled.as_bool()
+    }
 }

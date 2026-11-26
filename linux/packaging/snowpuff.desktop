@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Snowpuff
+GenericName=Desktop Snow
+Comment=Snow on your desktop
+Exec=snowpuff %u
+Icon=snowpuff
+Categories=Utility;
+Keywords=snow;winter;desktop;
+StartupNotify=false
+MimeType=x-scheme-handler/snowpuff;

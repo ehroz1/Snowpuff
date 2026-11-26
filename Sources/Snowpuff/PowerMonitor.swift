@@ -35,14 +35,13 @@ final class PowerMonitor {
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode) }
     }
 
-    func update() {
+    private func update() {
         let info = ProcessInfo.processInfo
         let next: PowerBudget
         if info.isLowPowerModeEnabled || info.thermalState == .serious || info.thermalState == .critical {
             next = .saver
         } else if onBattery {
-            // Battery Saver in the menu goes easier on the battery still.
-            next = Preferences.batterySaver ? .saver : .battery
+            next = .battery
         } else {
             next = .full
         }

@@ -1,118 +1,130 @@
 import AppKit
 
-enum Snowfall: Int, CaseIterable {
-    case off, light, steady, heavy, variable
-
-    var title: String {
-        switch self {
-        case .off: tr("Off", "Выкл")
-        case .light: tr("Light", "Лёгкий")
-        case .steady: tr("Steady", "Ровный")
-        case .heavy: tr("Heavy", "Метель")
-        case .variable: tr("Variable", "Переменный")
-        }
-    }
-
-    var flakesPerMegapoint: Float {
-        switch self {
-        case .off: 0
-        case .light: 150
-        case .steady: 380
-        case .heavy: 800
-        case .variable: 380
-        }
-    }
+/// What snow and leaves settle on.
+struct Surfaces: OptionSet {
+    let rawValue: Int
+    static let ground = Surfaces(rawValue: 1)
+    static let dock = Surfaces(rawValue: 2)
+    static let windows = Surfaces(rawValue: 4)
+    static let widgets = Surfaces(rawValue: 8)
+    /// The tops of things in the wallpaper.
+    static let wallpaper = Surfaces(rawValue: 16)
+    /// A selection dragged across the desktop.
+    static let selection = Surfaces(rawValue: 32)
+    /// What the window list is read for: the snow on the wallpaper hides behind every window, and a selection is found
+    /// among the windows.
+    static let tracked: Surfaces = [.dock, .windows, .widgets, .wallpaper, .selection]
 }
 
 enum Preferences {
     private static let defaults = UserDefaults.standard
+    static let opacityRange = 0.1...1.0
+    private static let intensityKey = "intensity"
+    /// Before the slider, the intensity was one of Off, Light, Steady, Heavy and Variable.
     private static let snowfallKey = "snowfall"
     private static let behindWindowsKey = "behindWindows"
+    private static let showOverFullScreenKey = "showOverFullScreen"
     private static let meltSnowKey = "meltSnow"
+    /// Before Accumulate picked where snow settles, it turned settling off everywhere at once.
     private static let accumulateKey = "accumulate"
+    private static let groundKey = "settleGround"
+    private static let dockKey = "settleDock"
+    private static let widgetsKey = "settleWidgets"
+    private static let wallpaperKey = "settleWallpaper"
     private static let snowOnWindowsKey = "snowOnWindows"
     private static let welcomedKey = "welcomed"
+    private static let installedAtKey = "installedAt"
     private static let showInScreenshotsKey = "showInScreenshots"
-    private static let iciclesKey = "icicles"
-    private static let warmGlowKey = "warmGlow"
-    private static let puffKey = "puff"
-    private static let quietOnCallsKey = "quietOnCalls"
-    private static let ambienceKey = "ambience"
-    private static let ambienceVolumeKey = "ambienceVolume"
-    private static let autoUpdateKey = "autoUpdate"
-    private static let overFullScreenKey = "overFullScreen"
-    private static let rainKey = "rain"
-    private static let maxPerformanceKey = "maxPerformance"
-    private static let weatherKey = "weather"
-    private static let mixRainKey = "mixRain"
-    private static let snowOnDockKey = "snowOnDock"
+    /// Before Deep Interaction meant the wallpaper's depth, it meant snow settling on a selection on the desktop.
     private static let deepInteractionKey = "deepInteraction"
-    private static let blizzardKey = "blizzard"
-    private static let fogKey = "fog"
-    private static let starsKey = "stars"
-    private static let garlandKey = "garland"
-    private static let frostKey = "frost"
-    private static let creaturesKey = "creatures"
-    private static let wordsKey = "words"
-    private static let soundEffectsKey = "soundEffects"
-    private static let opacityKey = "opacity"
-    private static let batterySaverKey = "batterySaver"
-    private static let liveWeatherKey = "liveWeather"
-    private static let lastSeenVersionKey = "lastSeenVersion"
-    private static let hotkeysKey = "hotkeys"
+    private static let selectionKey = "settleSelection"
+    private static let depthKey = "wallpaperDepth"
+    private static let pictureLevelKey = "pictureLevel"
+    private static let halloweenKey = "halloweenOn"
+    private static let halloweenSkippedKey = "halloweenSkipped"
+    private static let newYearKey = "newYearOn"
+    private static let newYearSkippedKey = "newYearSkipped"
+    private static let modeKey = "mode"
+    private static let mixedKey = "mixed"
+    private static let mixKey = "mix"
+    /// Before rain, the mode was only whether leaves fell.
     private static let autumnKey = "autumn"
+    private static let performanceKey = "performance"
+    private static let fallingOpacityKey = "fallingOpacity"
 
     static func registerDefaults() {
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if let stop = defaults.object(forKey: snowfallKey) as? Int {
+            if defaults.object(forKey: intensityKey) == nil {
+                defaults.set([0, 0.25, 0.5, 0.75, 0.5][min(max(stop, 0), 4)], forKey: intensityKey)
+            }
+            defaults.removeObject(forKey: snowfallKey)
+        }
         defaults.register(defaults: [
-            snowfallKey: (calm ? Snowfall.light : .steady).rawValue,
+            intensityKey: calm ? 0.25 : 0.5,
             behindWindowsKey: false,
+            showOverFullScreenKey: false,
             meltSnowKey: true,
-            accumulateKey: true,
+            groundKey: true,
+            dockKey: true,
+            widgetsKey: true,
+            wallpaperKey: false,
             snowOnWindowsKey: true,
             showInScreenshotsKey: false,
-            iciclesKey: true,
-            warmGlowKey: true,
-            puffKey: false,
-            quietOnCallsKey: true,
-            ambienceKey: 0,
-            ambienceVolumeKey: 0.5,
-            autoUpdateKey: true,
-            hotkeysKey: true,
-            overFullScreenKey: false,
-            rainKey: false,
-            maxPerformanceKey: false,
-            mixRainKey: false,
-            snowOnDockKey: true,
-            deepInteractionKey: false,
-            blizzardKey: true,
-            fogKey: false,
-            starsKey: true,
-            garlandKey: false,
-            frostKey: true,
-            creaturesKey: true,
-            wordsKey: false,
-            soundEffectsKey: true,
-            opacityKey: 1.0,
-            batterySaverKey: false,
-            liveWeatherKey: false,
+            selectionKey: true,
+            depthKey: true,
+            halloweenKey: false,
+            halloweenSkippedKey: 0,
+            newYearKey: false,
+            newYearSkippedKey: 0,
             autumnKey: false,
+            mixedKey: false,
+            fallingOpacityKey: 1.0,
         ])
+        if defaults.object(forKey: accumulateKey) != nil {
+            if !defaults.bool(forKey: accumulateKey) {
+                for key in [groundKey, dockKey, widgetsKey, wallpaperKey, snowOnWindowsKey] { defaults.set(false, forKey: key) }
+            }
+            defaults.removeObject(forKey: accumulateKey)
+        }
+        if defaults.object(forKey: deepInteractionKey) != nil {
+            defaults.set(defaults.bool(forKey: deepInteractionKey), forKey: selectionKey)
+            defaults.removeObject(forKey: deepInteractionKey)
+        }
+        if defaults.object(forKey: installedAtKey) == nil {
+            defaults.set(defaults.bool(forKey: welcomedKey) ? 0 : Date().timeIntervalSince1970, forKey: installedAtKey)
+        }
     }
 
-    static var snowfall: Snowfall {
-        get { Snowfall(rawValue: defaults.integer(forKey: snowfallKey)) ?? .steady }
-        set { defaults.set(newValue.rawValue, forKey: snowfallKey) }
+    /// When this install was first run, or nil for an install older than the stamp.
+    static var installedAt: Date? {
+        let stamp = defaults.double(forKey: installedAtKey)
+        return stamp > 0 ? Date(timeIntervalSince1970: stamp) : nil
     }
 
-    static var snowOnWindows: Bool {
-        get { defaults.bool(forKey: snowOnWindowsKey) }
-        set { defaults.set(newValue, forKey: snowOnWindowsKey) }
+    /// How much falls, from 0 to 1.
+    static var intensity: Double {
+        get { min(max(defaults.double(forKey: intensityKey), 0), 1) }
+        set { defaults.set(newValue, forKey: intensityKey) }
     }
 
-    static var accumulate: Bool {
-        get { defaults.bool(forKey: accumulateKey) }
-        set { defaults.set(newValue, forKey: accumulateKey) }
+    /// Where snow settles; Windows is `snowOnWindows`.
+    static var surfaces: Surfaces {
+        get {
+            var surfaces: Surfaces = []
+            for (surface, key) in [(Surfaces.ground, groundKey), (.dock, dockKey), (.widgets, widgetsKey), (.windows, snowOnWindowsKey),
+                                   (.wallpaper, wallpaperKey), (.selection, selectionKey)]
+            where defaults.bool(forKey: key) {
+                surfaces.insert(surface)
+            }
+            return surfaces
+        }
+        set {
+            for (surface, key) in [(Surfaces.ground, groundKey), (.dock, dockKey), (.widgets, widgetsKey), (.windows, snowOnWindowsKey),
+                                   (.wallpaper, wallpaperKey), (.selection, selectionKey)] {
+                defaults.set(newValue.contains(surface), forKey: key)
+            }
+        }
     }
 
     static var meltSnow: Bool {
@@ -130,161 +142,88 @@ enum Preferences {
         set { defaults.set(newValue, forKey: behindWindowsKey) }
     }
 
+    static var showOverFullScreen: Bool {
+        get { defaults.bool(forKey: showOverFullScreenKey) }
+        set { defaults.set(newValue, forKey: showOverFullScreenKey) }
+    }
+
     static var showInScreenshots: Bool {
         get { defaults.bool(forKey: showInScreenshotsKey) }
         set { defaults.set(newValue, forKey: showInScreenshotsKey) }
     }
 
-    static var icicles: Bool {
-        get { defaults.bool(forKey: iciclesKey) }
-        set { defaults.set(newValue, forKey: iciclesKey) }
+    /// Deep Interaction: the snow falls into the wallpaper's depth, behind what is nearer in it, and what lives in the
+    /// wallpaper walks its ground.
+    static var depth: Bool {
+        get { defaults.bool(forKey: depthKey) }
+        set { defaults.set(newValue, forKey: depthKey) }
     }
 
-    static var autumn: Bool {
-        get { defaults.bool(forKey: autumnKey) }
-        set { defaults.set(newValue, forKey: autumnKey) }
+    /// Halloween turned on from the menu, for every day.
+    static var halloween: Bool {
+        get { defaults.bool(forKey: halloweenKey) }
+        set { defaults.set(newValue, forKey: halloweenKey) }
     }
 
-    static var warmGlow: Bool {
-        get { defaults.bool(forKey: warmGlowKey) }
-        set { defaults.set(newValue, forKey: warmGlowKey) }
+    /// The year whose Halloween was turned off from the menu, zero for none.
+    static var halloweenSkipped: Int {
+        get { defaults.integer(forKey: halloweenSkippedKey) }
+        set { defaults.set(newValue, forKey: halloweenSkippedKey) }
     }
 
-    static var puff: Bool {
-        get { defaults.bool(forKey: puffKey) }
-        set { defaults.set(newValue, forKey: puffKey) }
+    /// The New Year turned on from the menu, for every day.
+    static var newYear: Bool {
+        get { defaults.bool(forKey: newYearKey) }
+        set { defaults.set(newValue, forKey: newYearKey) }
     }
 
-    static var quietOnCalls: Bool {
-        get { defaults.bool(forKey: quietOnCallsKey) }
-        set { defaults.set(newValue, forKey: quietOnCallsKey) }
+    /// The year whose New Year season, from its December, was turned off from the menu, zero for none.
+    static var newYearSkipped: Int {
+        get { defaults.integer(forKey: newYearSkippedKey) }
+        set { defaults.set(newValue, forKey: newYearSkippedKey) }
     }
 
-    static var ambience: Ambience.Mode {
-        get { Ambience.Mode(rawValue: defaults.integer(forKey: ambienceKey)) ?? .off }
-        set { defaults.set(newValue.rawValue, forKey: ambienceKey) }
+    static var mode: Mode {
+        get {
+            if let raw = defaults.object(forKey: modeKey) as? Int, let mode = Mode(rawValue: raw) { return mode }
+            return defaults.bool(forKey: autumnKey) ? .autumn : .snow
+        }
+        set { defaults.set(newValue.rawValue, forKey: modeKey) }
     }
 
-    /// Every frame is drawn at the display's full rate, for the smoothest motion at some cost in power.
+    /// Two modes falling together.
+    static var mixed: Bool {
+        get { defaults.bool(forKey: mixedKey) }
+        set { defaults.set(newValue, forKey: mixedKey) }
+    }
+
+    /// The two modes Mixed lets fall together, the one picked last at the end.
+    static var mix: [Mode] {
+        get {
+            let picked = (defaults.array(forKey: mixKey) as? [Int] ?? []).compactMap(Mode.init(rawValue:))
+            return picked.count == 2 && picked[0] != picked[1] ? picked : [mode == .snow ? .autumn : .snow, mode]
+        }
+        set { defaults.set(newValue.map(\.rawValue), forKey: mixKey) }
+    }
+
+    /// What falls.
+    static var modes: [Mode] { mixed ? mix : [mode] }
+
+    /// How opaque snow, leaves and rain are while they fall.
+    static var fallingOpacity: Double {
+        get { min(max(defaults.double(forKey: fallingOpacityKey), opacityRange.lowerBound), opacityRange.upperBound) }
+        set { defaults.set(newValue, forKey: fallingOpacityKey) }
+    }
+
+    /// How much snow lies in the wallpaper's picture, kept from one run of the app to the next.
+    static var pictureLevel: Float {
+        get { defaults.float(forKey: pictureLevelKey) }
+        set { defaults.set(newValue, forKey: pictureLevelKey) }
+    }
+
+    /// Drawn at the display's highest rate all the time, instead of only while something is pushed around.
     static var maxPerformance: Bool {
-        get { defaults.bool(forKey: maxPerformanceKey) }
-        set { defaults.set(newValue, forKey: maxPerformanceKey) }
+        get { defaults.integer(forKey: performanceKey) == 1 }
+        set { defaults.set(newValue ? 1 : 0, forKey: performanceKey) }
     }
-
-    static var weather: Weather {
-        get { Weather(rawValue: defaults.integer(forKey: weatherKey)) ?? .snow }
-        set { defaults.set(newValue.rawValue, forKey: weatherKey) }
-    }
-
-    static var opacity: Float {
-        get { defaults.float(forKey: opacityKey) }
-        set { defaults.set(newValue, forKey: opacityKey) }
-    }
-
-    /// Control-Option-letter shortcuts work anywhere.
-    static var hotkeys: Bool {
-        get { defaults.bool(forKey: hotkeysKey) }
-        set { defaults.set(newValue, forKey: hotkeysKey) }
-    }
-
-    /// The version whose news was last shown, to show "What's New" once after an update.
-    static var lastSeenVersion: String? {
-        get { defaults.string(forKey: lastSeenVersionKey) }
-        set { defaults.set(newValue, forKey: lastSeenVersionKey) }
-    }
-
-    static var mixRain: Bool {
-        get { defaults.bool(forKey: mixRainKey) }
-        set { defaults.set(newValue, forKey: mixRainKey) }
-    }
-
-    static var snowOnDock: Bool {
-        get { defaults.bool(forKey: snowOnDockKey) }
-        set { defaults.set(newValue, forKey: snowOnDockKey) }
-    }
-
-    static var deepInteraction: Bool {
-        get { defaults.bool(forKey: deepInteractionKey) }
-        set { defaults.set(newValue, forKey: deepInteractionKey) }
-    }
-
-    static var blizzard: Bool {
-        get { defaults.bool(forKey: blizzardKey) }
-        set { defaults.set(newValue, forKey: blizzardKey) }
-    }
-
-    static var fog: Bool {
-        get { defaults.bool(forKey: fogKey) }
-        set { defaults.set(newValue, forKey: fogKey) }
-    }
-
-    static var stars: Bool {
-        get { defaults.bool(forKey: starsKey) }
-        set { defaults.set(newValue, forKey: starsKey) }
-    }
-
-    static var garland: Bool {
-        get { defaults.bool(forKey: garlandKey) }
-        set { defaults.set(newValue, forKey: garlandKey) }
-    }
-
-    static var frost: Bool {
-        get { defaults.bool(forKey: frostKey) }
-        set { defaults.set(newValue, forKey: frostKey) }
-    }
-
-    static var creatures: Bool {
-        get { defaults.bool(forKey: creaturesKey) }
-        set { defaults.set(newValue, forKey: creaturesKey) }
-    }
-
-    static var words: Bool {
-        get { defaults.bool(forKey: wordsKey) }
-        set { defaults.set(newValue, forKey: wordsKey) }
-    }
-
-    static var soundEffects: Bool {
-        get { defaults.bool(forKey: soundEffectsKey) }
-        set { defaults.set(newValue, forKey: soundEffectsKey) }
-    }
-
-    static var batterySaver: Bool {
-        get { defaults.bool(forKey: batterySaverKey) }
-        set { defaults.set(newValue, forKey: batterySaverKey) }
-    }
-
-    static var liveWeather: Bool {
-        get { defaults.bool(forKey: liveWeatherKey) }
-        set { defaults.set(newValue, forKey: liveWeatherKey) }
-    }
-
-    /// Rain falls instead of snow or leaves.
-    static var rain: Bool {
-        get { defaults.bool(forKey: rainKey) }
-        set { defaults.set(newValue, forKey: rainKey) }
-    }
-
-    /// The snow stays over full-screen apps and games.
-    static var overFullScreen: Bool {
-        get { defaults.bool(forKey: overFullScreenKey) }
-        set { defaults.set(newValue, forKey: overFullScreenKey) }
-    }
-
-    /// New versions from GitHub install themselves.
-    static var autoUpdate: Bool {
-        get { defaults.bool(forKey: autoUpdateKey) }
-        set { defaults.set(newValue, forKey: autoUpdateKey) }
-    }
-
-    static var ambienceVolume: Float {
-        get { defaults.float(forKey: ambienceVolumeKey) }
-        set { defaults.set(newValue, forKey: ambienceVolumeKey) }
-    }
-}
-
-/// The app speaks Russian on a Russian system and English everywhere else.
-let speaksRussian = Locale.preferredLanguages.first?.lowercased().hasPrefix("ru") ?? false
-
-func tr(_ english: String, _ russian: String) -> String {
-    speaksRussian ? russian : english
 }

@@ -1,6 +1,6 @@
 [package]
 name = "snowpuff"
-version = "1.3.2"
+version = "1.4.0"
 edition = "2024"
 publish = false
 autobins = false
@@ -19,18 +19,20 @@ path = "src/bin/setup.rs"
 required-features = ["setup"]
 
 [dependencies]
+serde_json = "1"
 snowpuff-core = { path = "../core" }
+snowpuff-depth = { path = "../depth" }
+snowpuff-net = { path = "../net" }
 
 [target.'cfg(windows)'.dependencies]
 windows-numerics = "0.3"
-windows-future = "0.3"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
-    "Devices_Geolocation",
-    "Foundation",
+    "ApplicationModel",
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_Direct3D",
@@ -42,24 +44,25 @@ features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
-    "Win32_Globalization",
     "Win32_Graphics_Imaging",
-    "Win32_Media_Audio",
     "Win32_Networking_WinHttp",
     "Win32_Security",
+    "Win32_Security_Authentication_Identity",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_Variant",
+    "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_System_Performance",
     "Win32_System_Power",
-    "Win32_System_Recovery",
     "Win32_System_Registry",
     "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
@@ -69,4 +72,13 @@ features = [
 [profile.release]
 lto = true
 codegen-units = 1
+panic = "abort"
 strip = true
+
+# gemm, under candle, assembles its half-precision kernels on 64-bit ARM Linux only when optimized, and the build script
+# packing the depth network's weights runs it unoptimized by default.
+[profile.dev.package.gemm-f16]
+opt-level = 3
+
+[profile.release.package.gemm-f16]
+opt-level = 3

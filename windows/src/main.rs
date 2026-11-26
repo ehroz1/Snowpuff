@@ -1,53 +1,58 @@
 #![windows_subsystem = "windows"]
 
 mod app;
-mod audio;
-mod calls;
+mod clicks;
 mod desktop;
+mod fight;
+mod fonts;
+mod halloween;
 mod light;
 mod log;
+mod menu;
+mod new_year;
+mod picture;
 mod prefs;
 mod render;
 mod screen;
 mod snow;
+mod extra;
+mod store;
 mod tracker;
 mod update;
-mod weather;
-mod whats_new;
+mod wallpaper;
 mod welcome;
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-use windows::Win32::System::Recovery::{REGISTER_APPLICATION_RESTART_FLAGS, RegisterApplicationRestart};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows::core::w;
 
 fn main() {
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments.get(1).map(String::as_str) == Some(wallpaper::READ) {
+        std::process::exit(wallpaper::read_for_another_run(&arguments[2..]));
+    }
     // What "Uninstall" in Settings runs; it removes everything, even with Snowpuff still running.
     if std::env::args().skip(1).any(|argument| argument == "--uninstall") {
         snowpuff::install::uninstall();
         return;
     }
+    let link = arguments.iter().skip(1).find(|argument| argument.starts_with("snowpuff://")).cloned();
     unsafe {
         let _instance = CreateMutexW(None, true, w!("Local\\Snowpuff"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            if let Some(link) = link {
+                app::hand_over(&link);
+            }
             return;
         }
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    snowpuff::language::choose();
     log::start();
+    std::panic::set_hook(Box::new(|info| log!("panic on the {} thread: {info}", std::thread::current().name().unwrap_or("unnamed"))));
     log!("Snowpuff {}", env!("CARGO_PKG_VERSION"));
-    // A mistake anywhere is written down instead of vanishing with the process.
-    std::panic::set_hook(Box::new(|info| {
-        let thread = std::thread::current().name().unwrap_or("main").to_string();
-        log!("panic on {thread}: {info}");
-    }));
-    // Should Snowpuff still crash outright, Windows opens it again (once it has run for a minute, so a crash at
-    // start doesn't loop). Updates and Quit end it normally, which doesn't count.
-    unsafe {
-        let _ = RegisterApplicationRestart(windows::core::w!("--restarted"), REGISTER_APPLICATION_RESTART_FLAGS(0));
-    }
-    if let Err(error) = app::run() {
+    if let Err(error) = app::run(link) {
         log!("failed: {error}");
     }
 }

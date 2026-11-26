@@ -1,5 +1,5 @@
 use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use windows::Win32::Foundation::{GENERIC_READ, RECT};
@@ -12,38 +12,36 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
 use windows::core::{PCWSTR, PWSTR, Result};
 
-use snowpuff_core::geometry::smoothstep;
+use snowpuff_core::halloween;
 
-/// What the hour brings to the snow's light.
+use crate::wallpaper::{Placement, Wallpaper};
+
+/// What the hour brings to the snow's light: daylight, and how far into Halloween night it is.
 #[derive(Clone, Copy)]
 pub struct Sky {
     pub daylight: [f32; 3],
-    /// How much of full daylight there is: 0 at night, 1 by day.
-    pub day: f32,
+    pub night: f32,
 }
 
 impl Sky {
-    pub fn now() -> Sky {
-        let hour = hour();
-        Sky { daylight: daylight(hour), day: daylight_share(hour) }
+    /// The sky now; `halloween` while it is Halloween and wanted.
+    pub fn now(halloween: bool) -> Sky {
+        Sky { daylight: daylight(hour()), night: halloween::night(halloween) }
     }
 }
 
-/// The local time of day in hours.
+/// The local time of day in hours, or the hour being previewed.
 fn hour() -> f32 {
-    let now = unsafe { GetLocalTime() };
-    now.wHour as f32 + now.wMinute as f32 / 60.0
-}
-
-/// How much of full daylight there is: none at night, all of it from mid-morning to late afternoon.
-fn daylight_share(hour: f32) -> f32 {
-    smoothstep(6.0, 8.5, hour) * (1.0 - smoothstep(17.5, 20.5, hour))
+    halloween::previewed_hour().unwrap_or_else(|| {
+        let now = unsafe { GetLocalTime() };
+        now.wHour as f32 + now.wMinute as f32 / 60.0
+    })
 }
 
 /// The scene turns warmer at dawn and dusk, cooler and dimmer at night.
 /// Clock-based rather than solar: close enough for mood, and needs no location.
 fn daylight(hour: f32) -> [f32; 3] {
-    let day = daylight_share(hour);
+    let day = halloween::daylight_share(hour);
     let golden = ((-((hour - 7.6) / 1.1).powi(2)).exp() + (-((hour - 18.6) / 1.2).powi(2)).exp()).min(1.0);
     let night = [0.86, 0.89, 0.97];
     let warm = [1.0, 0.965, 0.915];
@@ -90,7 +88,7 @@ impl Wallpapers {
                 }
                 return match picture.filter(|path| !path.is_empty()) {
                     Some(path) => {
-                        let path = PathBuf::from(path);
+                        let path = shown(PathBuf::from(path));
                         let modified = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
                         Some(Backdrop::Picture(path, modified))
                     }
@@ -99,6 +97,35 @@ impl Wallpapers {
             }
         }
         None
+    }
+
+    /// The picture on the display with these bounds, in physical pixels, as it is laid out; none for a plain colour.
+    pub fn wallpaper(&self, bounds: &RECT) -> Option<Wallpaper> {
+        let Some(Backdrop::Picture(path, _)) = self.backdrop(bounds) else { return None };
+        unsafe {
+            let placement = self.desktop.GetPosition().map_or(Placement::Fill, |position| Placement::from_position(position.0));
+            let fill =
+                self.desktop.GetBackgroundColor().map_or([0.0; 3], |color| std::array::from_fn(|i| ((color.0 >> (8 * i)) & 0xff) as f32 / 255.0));
+            Wallpaper::new(path, placement, fill)
+        }
+    }
+
+    /// For the log: how big the backdrop's picture is, and how Windows lays pictures out.
+    pub fn described(&self, backdrop: &Backdrop) -> String {
+        let Backdrop::Picture(path, _) = backdrop else { return String::new() };
+        let size = self.size(path).map_or("unreadable".to_string(), |(width, height)| format!("{width}x{height}"));
+        let position = unsafe { self.desktop.GetPosition() }.map_or(-1, |position| position.0);
+        format!("picture {size}, position {position}")
+    }
+
+    fn size(&self, path: &Path) -> Option<(u32, u32)> {
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        unsafe {
+            let decoder = self.imaging.CreateDecoderFromFilename(PCWSTR(name.as_ptr()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand).ok()?;
+            let (mut width, mut height) = (0, 0);
+            decoder.GetFrame(0).ok()?.GetSize(&mut width, &mut height).ok()?;
+            Some((width, height))
+        }
     }
 
     /// The backdrop's average colour along the bottom quarter, brought to the brightness of snow in shade.
@@ -140,6 +167,20 @@ impl Wallpapers {
             Ok(sum.map(|channel| channel / count))
         }
     }
+}
+
+fn themes() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|folder| PathBuf::from(folder).join(r"Microsoft\Windows\Themes"))
+}
+
+/// The picture a display shows. Windows names the file the wallpaper was set from, which may since have gone or be on a
+/// drive that isn't there, while it goes on showing the copy it keeps of it.
+fn shown(path: PathBuf) -> PathBuf {
+    if path.is_file() {
+        return path;
+    }
+    let copy = themes().map(|themes| themes.join("TranscodedWallpaper"));
+    copy.filter(|copy| copy.is_file()).unwrap_or(path)
 }
 
 /// Copies a string the shell allocated and frees it.

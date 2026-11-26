@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Simulation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Formatting
+        run: |
+          cargo fmt --check --manifest-path core/Cargo.toml
+          cargo fmt --check --manifest-path windows/Cargo.toml
+          cargo fmt --check --manifest-path linux/Cargo.toml
+      - name: Tests
+        run: cargo test --locked --manifest-path core/Cargo.toml
+
+  windows:
+    name: Windows app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo build --locked --release --bin Snowpuff --manifest-path windows/Cargo.toml
+      # The Microsoft Store's package, ready to upload to Partner Center.
+      - run: windows/store/pack.ps1
+        shell: pwsh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snowpuff-msix
+          path: dist/Snowpuff.msix
+
+  linux:
+    name: Linux app
+    # An older glibc than ubuntu-latest has, so the packages it leaves run on older distributions too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libwayland-dev rpm file
+      - run: cargo build --locked --release --manifest-path linux/Cargo.toml
+      - run: linux/packaging/package.sh linux/target/release/snowpuff dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snowpuff-linux-x86_64
+          path: dist
+
+  mac:
+    name: Mac app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The rooms of snowball fights, which the app links: build.sh makes it for both architectures, this for the runner's.
+      - run: |
+          cargo build --locked --release --manifest-path net/Cargo.toml
+          mkdir -p build/net
+          cp net/target/release/libsnowpuff_net.a build/net/
+      - run: swift build -c release

@@ -1,0 +1,101 @@
+/* Snowpuff's words, one file per language. The Mac app ships each as <language>.lproj/Localizable.strings;
+   the Windows and Linux apps build them in through snowpuff-core. Every file has every key of en.strings. */
+
+"intensity" = "Intensity";
+"opacity" = "Opacity";
+"off" = "Off";
+"mode" = "Mode";
+"mixed" = "Mixed";
+"snow" = "Snow";
+"autumn" = "Autumn Leaves";
+"rain" = "Rain";
+"blossom" = "Cherry Blossom";
+"halloween" = "Halloween";
+"newyear" = "New Year";
+"settings" = "Settings";
+"behavior" = "Behavior";
+"display" = "Display";
+"general" = "General";
+"accumulate" = "Accumulate";
+/* What Accumulate lets snow settle on, and what it sums up as when every one is on. */
+"surface.ground" = "Ground";
+"surface.dock" = "Dock";
+"surface.widgets" = "Widgets";
+"surface.windows" = "Windows";
+"surface.wallpaper" = "Wallpaper";
+"surface.panel" = "Panel";
+"all" = "All";
+"melt.snow" = "Melt Snow";
+"melt.autumn" = "Wither Leaves";
+"melt.blossom" = "Wilt Petals";
+"deep" = "Deep Interaction";
+"behind" = "Behind Windows";
+"full_screen" = "Show over Full Screen";
+"taskbar" = "Behind Taskbar";
+"screenshots" = "Show in Screenshots";
+"performance" = "Max Performance";
+"login" = "Open at Login";
+"updates" = "Check for Updates…";
+"support" = "Support Snowpuff";
+"quit" = "Quit";
+
+/* Clear Snow, for what lies about: rain never does. */
+"clear.snow" = "Clear Snow";
+"clear.autumn" = "Clear Leaves";
+"clear.blossom" = "Clear Petals";
+"clear.snow.autumn" = "Clear Snow and Leaves";
+"clear.snow.blossom" = "Clear Snow and Petals";
+"clear.autumn.blossom" = "Clear Leaves and Petals";
+
+/* The welcome card; its title stays in English everywhere, and its button is shown in capitals. */
+"welcome.mac" = "Snowpuff lives in the menu bar. Click the snowflake to change the snowfall, let the drift melt, or keep the snow behind your windows. Sweep it aside with your cursor.";
+"welcome.windows" = "Snowpuff lives in the system tray. Click its icon to change the snowfall, let the drift melt, or keep the snow off your windows. Sweep it aside with your cursor.";
+"welcome.start" = "Get Started";
+
+/* Windows' own update check. */
+"update.ask" = "Snowpuff {version} is available. You have {current}.\n\nDownload it now?";
+"update.available" = "Snowpuff {version} is available";
+"update.click" = "Click to download it.";
+"update.latest" = "You're up to date.\n\nSnowpuff {current} is the latest version.";
+"update.failed" = "Couldn't check for updates.";
+"shortcut" = "Snow on your desktop";
+
+/* Windows' installer card; its title and buttons are shown in capitals. */
+"setup.fresh" = "Version {version}. Installs just for you, without administrator rights.";
+"setup.install" = "Install";
+"setup.newer" = "Updates Snowpuff {old} to {version}. Your settings stay as they are.";
+"setup.update" = "Update";
+"setup.same" = "Snowpuff {old} is already here. Installing {version} again repairs it.";
+"setup.reinstall" = "Reinstall";
+"setup.older" = "Replaces Snowpuff {old} with the older {version}.";
+"setup.downgrade" = "Downgrade";
+"setup.installing" = "Installing…";
+"setup.settle" = "Let it settle.";
+"setup.done" = "Snowpuff is installed. You'll find it in the Start menu.";
+"setup.open" = "Open Snowpuff";
+"setup.failed" = "Couldn't install: {error}.";
+"setup.retry" = "Try Again";
+"fight" = "Snowball Fight";
+"fight.invite" = "Invite Friends";
+"fight.copy" = "Copy Invite Link";
+"fight.join" = "Join from Clipboard";
+"fight.copied" = "Link copied";
+"fight.nolink" = "No invite link in the clipboard";
+"fight.leave" = "Leave Room";
+"fight.opening" = "Opening a room…";
+"fight.joining" = "Joining…";
+"fight.waiting" = "Link copied — waiting for friends";
+"fight.with" = "With %@";
+"fight.full" = "The room is full";
+"fight.closed" = "The room was closed";
+"fight.failed" = "Couldn’t connect";
+"fight.unavailable" = "Playing online is unavailable for now";
+"surface.selection" = "Selection";
+"fight.you" = "You";
+"fight.won" = "%@ wins!";
+"fight.youwon" = "You win!";
+"fight.out" = "You’re out";
+"fight.wins" = "Wins";
+"fight.hint" = "⌘-click the wallpaper to throw a snowball";
+"fight.hint.ctrl" = "Ctrl-click the wallpaper to throw a snowball";
+"fight.hint.snowman" = "Click a snowman to throw a snowball at him";

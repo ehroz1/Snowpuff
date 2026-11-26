@@ -11,14 +11,21 @@ final class SceneLight {
     private(set) var shadowTint = SIMD4<Float>(repeating: 0)
     /// The colour the snow's surface glows, and how much.
     private(set) var rim = SIMD4<Float>(repeating: 0)
-    /// How brightly the cursor glows like a candle.
+    /// How brightly the cursor glows like a candle in a jack-o'-lantern.
     private(set) var lantern: Float = 0
-    /// How much of full daylight there is: 0 at night, 1 by day.
-    private(set) var day: Float = 1
+    var halloween = false
 
-    private var wallpaper: (url: URL, modified: Date?)?
     private var wallpaperTint = SIMD4<Float>(repeating: 0)
     private var updatedAt: CFTimeInterval = -.infinity
+
+    private struct Picture: Hashable {
+        let url: URL
+        let modified: Date?
+    }
+    /// Read on the main thread only: a picture takes a quarter of a second to decode, so each is decoded once, off it.
+    private static var tints: [Picture: SIMD4<Float>] = [:]
+    private static var waiting: [Picture: [() -> Void]] = [:]
+    private static let decoder = DispatchQueue(label: "Snowpuff.wallpaperTint", qos: .utility)
 
     func invalidate() {
         updatedAt = -.infinity
@@ -30,22 +37,38 @@ final class SceneLight {
         updateWallpaper(screen: screen)
         let hour = Self.hour(at: Date())
         light = Self.daylight(at: hour)
-        day = Self.day(at: hour)
         shadowTint = wallpaperTint
         rim = .zero
         lantern = 0
+        guard halloween else { return }
+        // Halloween night, by day too: cold moonlight, violet shadows and a candle's glow along the drifts' edges.
+        light = SIMD3(0.76, 0.84, 1)
+        shadowTint = SIMD4(0.42, 0.3, 0.68, 0.6)
+        rim = SIMD4(1, 0.56, 0.2, 0.3)
+        lantern = 1
     }
 
     private func updateWallpaper(screen: NSScreen?) {
         guard let screen, let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
-            wallpaper = nil
             wallpaperTint = .zero
             return
         }
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        guard wallpaper?.url != url || wallpaper?.modified != modified else { return }
-        wallpaper = (url, modified)
-        wallpaperTint = Self.tint(fromPictureAt: url) ?? .zero
+        let picture = Picture(url: url, modified: modified)
+        if let tint = Self.tints[picture] {
+            wallpaperTint = tint
+            return
+        }
+        let decoding = Self.waiting[picture] != nil
+        Self.waiting[picture, default: []].append { [weak self] in self?.invalidate() }
+        guard !decoding else { return }
+        Self.decoder.async {
+            let tint = Self.tint(fromPictureAt: url) ?? .zero
+            DispatchQueue.main.async {
+                Self.tints[picture] = tint
+                Self.waiting.removeValue(forKey: picture)?.forEach { $0() }
+            }
+        }
     }
 
     private static func hour(at date: Date) -> Float {

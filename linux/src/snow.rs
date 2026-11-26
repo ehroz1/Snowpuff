@@ -1,0 +1,1067 @@
+//! The snow loop: one overlay per display, stepped and drawn at the pace the snow needs, the tray's choices,
+//! and what pauses the snow. Everything runs on the main thread around one event loop; the tray and the
+//! KWin reports come in from threads of their own.
+
+use std::collections::HashMap;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
+
+use calloop::EventLoop;
+use calloop::channel::Event;
+use calloop_wayland_source::WaylandSource;
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+use smithay_client_toolkit::shell::wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure};
+use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
+use wayland_client::globals::registry_queue_init;
+use wayland_client::protocol::{wl_output, wl_seat, wl_surface};
+use wayland_client::{Connection, QueueHandle};
+use zbus::blocking::Connection as Bus;
+
+use snowpuff_core::geometry::V2;
+use snowpuff_core::halloween::{Choice, Today};
+use snowpuff_core::modes::Picked;
+use snowpuff_core::new_year::{self, Holiday};
+use snowpuff_core::simulation::{Borrowed, Mapping, Mode, SnowSimulation, Stray, WindowId};
+use snowpuff_core::text::tr;
+
+use crate::chores;
+use crate::fight;
+use crate::kwin;
+use crate::light::{self, Shade, daylight};
+use crate::log;
+use crate::picture::PictureSnow;
+use crate::prefs::Settings;
+use crate::render::{Ambient, Gpu};
+use crate::screen::{self, PowerBudget, Screen};
+use crate::source::{Demand, Report, Shared, Source};
+use crate::tray::Tray;
+use crate::windows::{self, Area};
+
+pub enum Command {
+    /// How much falls, 0 to 1.
+    Intensity(f32),
+    /// How opaque what falls is drawn, 0.1 to 1.
+    FallingOpacity(f32),
+    Ground(bool),
+    Panel(bool),
+    /// Accumulate's Wallpaper, and Deep Interaction: the snow lying in the wallpaper's picture, and the flakes falling
+    /// into its depth.
+    Wallpaper(bool),
+    Depth(bool),
+    Melt(bool),
+    SnowOnWindows(bool),
+    BehindWindows(bool),
+    OverFullScreen(bool),
+    /// Every frame at the display's highest rate, or as fast as what moves needs.
+    Performance(bool),
+    ShowInScreenshots(bool),
+    /// Halloween or the New Year turned on or off from the menu: turning one on turns the other off.
+    Holidays {
+        halloween: Choice,
+        new_year: Choice,
+    },
+    /// The screen locked or unlocked.
+    Locked(bool),
+    /// Blows all the snow away; when calm, for less motion, melts it where it lies instead.
+    ClearSnow(bool),
+    /// The snowball fight's room: open one, or copy its link again; join the one on the clipboard; leave it.
+    FightInvite,
+    FightJoin,
+    FightLeave,
+    /// Other kinds fall, once what lies is cleared away as `ClearSnow` clears it; a kind only joining what falls
+    /// starts at once.
+    Mode {
+        picked: Picked,
+        calm: bool,
+    },
+    Power(PowerBudget),
+    /// Each display's desktop picture, with the tint it gives the shadows.
+    Backdrops(Vec<Shade>),
+    /// The desktop turned light or dark.
+    Light(bool),
+    Quit,
+}
+
+pub struct App {
+    registry: RegistryState,
+    outputs: OutputState,
+    /// The snowball fight's room, while this player is in one; the one being opened or joined; and the room as the tray
+    /// last showed it.
+    room: snowpuff_core::snowman::room::Room,
+    opening: Option<fight::Opening>,
+    room_shown: u64,
+    /// A word on what was just done, shown in the menu in place of the room's state until then.
+    notice: Option<std::time::Instant>,
+    /// The seats' pointers, for clicks on the snowmen in the wallpaper.
+    seat: SeatState,
+    pointers: Vec<wayland_client::protocol::wl_pointer::WlPointer>,
+    compositor: CompositorState,
+    layer_shell: LayerShell,
+    qh: QueueHandle<App>,
+    gpu: Gpu,
+    /// When the graphics were last started again after the driver lost them.
+    gpu_renewed_at: Option<Instant>,
+    wayland: Connection,
+    bus: Bus,
+    shared: Arc<Shared>,
+    source: Source,
+    settings: Settings,
+    screens: Vec<Screen>,
+    locked: bool,
+    quit: bool,
+    displays_changed_at: Option<Instant>,
+    report: (u64, Option<Arc<Report>>),
+    /// The display each window's snow belongs to, by name.
+    owners: HashMap<WindowId, String>,
+    budget: PowerBudget,
+    light: [f32; 3],
+    today: Today,
+    new_year_today: Today,
+    /// Whether the snow has Halloween's ghosts, or the New Year's fir: whichever holiday it keeps.
+    halloween: bool,
+    new_year: bool,
+    /// How far into Halloween night it is.
+    night: f32,
+    tray: Option<ksni::blocking::Handle<Tray>>,
+    started: Instant,
+    chores_at: Instant,
+    light_at: Instant,
+    /// Asks the chores for the desktop pictures again.
+    backdrops_wanted: mpsc::Sender<()>,
+    /// The desktop pictures as the chores last found them.
+    shades: Vec<Shade>,
+    /// When the snow's level in the wallpaper was last kept for the next run.
+    picture_kept_at: Instant,
+    stats: Stats,
+}
+
+/// Runs Snowpuff, joining the snowball fight `link` is to; or, with Snowpuff already running, hands it the link.
+pub fn run(link: Option<String>) -> Result<(), String> {
+    let settings = Settings::load();
+    let mut event_loop: EventLoop<App> = EventLoop::try_new().map_err(|error| error.to_string())?;
+    // First of all: the signals are blocked on this thread so the loop can take them, and threads started
+    // later (D-Bus, the tray, the graphics driver's) inherit that, or a quit would kill the app on the spot
+    // and leave its script in KWin.
+    let signals =
+        calloop::signals::Signals::new(&[calloop::signals::Signal::SIGINT, calloop::signals::Signal::SIGTERM]).map_err(|error| error.to_string())?;
+    event_loop.handle().insert_source(signals, |_, _, app| app.quit = true).map_err(|error| error.to_string())?;
+    let (ping, ping_source) = calloop::ping::make_ping().map_err(|error| error.to_string())?;
+    event_loop.handle().insert_source(ping_source, |_, _, _| {}).map_err(|error| error.to_string())?;
+    let shared = Arc::new(Shared::new(ping));
+    let Some(bus) = kwin::serve(shared.clone()).map_err(|error| format!("D-Bus: {error}"))? else {
+        if let Some(link) = link
+            && kwin::hand_over(&link)
+        {
+            return Ok(());
+        }
+        eprintln!("Snowpuff is already running.");
+        return Ok(());
+    };
+    if let Some(link) = link {
+        shared.hand_link(link);
+    }
+    // Only now: a second copy that stops here must not wipe the running one's log.
+    crate::log::start();
+    let report_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log!("panic on the {} thread: {info}", std::thread::current().name().unwrap_or("unnamed"));
+        report_panic(info);
+    }));
+    log!("Snowpuff {}", env!("CARGO_PKG_VERSION"));
+
+    let connection = Connection::connect_to_env().map_err(|error| format!("Wayland: {error}"))?;
+    let (globals, mut queue) = registry_queue_init::<App>(&connection).map_err(|error| error.to_string())?;
+    let qh = queue.handle();
+    let compositor = CompositorState::bind(&globals, &qh).map_err(|error| error.to_string())?;
+    let layer_shell = LayerShell::bind(&globals, &qh).map_err(|_| "the compositor has no layer shell".to_string())?;
+    let gpu = Gpu::new(connection.backend().display_ptr().cast())?;
+    log!("adapter: {}", gpu.adapter);
+
+    let (commands, channel) = calloop::channel::channel::<Command>();
+    event_loop
+        .handle()
+        .insert_source(channel, |event, _, app| {
+            if let Event::Msg(command) = event {
+                app.command(command);
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    let now = Instant::now();
+    let mut app = App {
+        registry: RegistryState::new(&globals),
+        outputs: OutputState::new(&globals, &qh),
+        seat: SeatState::new(&globals, &qh),
+        room: Default::default(),
+        opening: None,
+        room_shown: 0,
+        notice: None,
+        pointers: Vec::new(),
+        compositor,
+        layer_shell,
+        qh: qh.clone(),
+        gpu,
+        gpu_renewed_at: None,
+        wayland: connection.clone(),
+        bus: bus.clone(),
+        source: Source::start(&bus, shared.clone(), settings.show_in_screenshots),
+        shared,
+        settings,
+        screens: Vec::new(),
+        locked: false,
+        quit: false,
+        displays_changed_at: None,
+        report: (0, None),
+        owners: HashMap::new(),
+        budget: PowerBudget::Full,
+        light: daylight(),
+        today: Today::default(),
+        new_year_today: Today::default(),
+        halloween: false,
+        new_year: false,
+        night: 0.0,
+        tray: None,
+        started: now,
+        chores_at: now,
+        light_at: now,
+        backdrops_wanted: chores::start(bus.clone(), commands.clone()),
+        shades: Vec::new(),
+        picture_kept_at: Instant::now(),
+        stats: Stats::new(now),
+    };
+    let result = 'run: {
+        // The displays are known after a round trip; the snow starts on them right away.
+        if let Err(error) = queue.roundtrip(&mut app) {
+            break 'run Err(error.to_string());
+        }
+        app.sync_screens();
+        if let Err(error) = WaylandSource::new(connection, queue).insert(event_loop.handle()) {
+            break 'run Err(error.to_string());
+        }
+
+        use ksni::blocking::TrayMethods;
+        app.tray = Tray::new(settings, commands.clone()).assume_sni_available(true).spawn().inspect_err(|error| log!("tray: {error}")).ok();
+        watch_lock(&bus, commands);
+
+        loop {
+            if app.quit {
+                break Ok(());
+            }
+            let timeout = app.timeout();
+            if let Err(error) = event_loop.dispatch(timeout, &mut app) {
+                break Err(error.to_string());
+            }
+            if let Err(error) = app.tick() {
+                break Err(error);
+            }
+        }
+    };
+
+    // Also when the Wayland connection broke: the KWin script must not outlive the app.
+    app.source.stop(&app.bus);
+    if let Some(tray) = app.tray.take() {
+        tray.shutdown().wait();
+    }
+    for screen in app.screens.drain(..) {
+        screen.release(&app.gpu);
+    }
+    result
+}
+
+/// Pauses the snow while the screen is locked.
+fn watch_lock(bus: &Bus, commands: calloop::channel::Sender<Command>) {
+    let bus = bus.clone();
+    let _ = std::thread::Builder::new().name("lock".into()).spawn(move || {
+        let Ok(rule) = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.freedesktop.ScreenSaver")
+            .and_then(|rule| rule.member("ActiveChanged"))
+            .map(|rule| rule.build())
+        else {
+            return;
+        };
+        let Ok(messages) = zbus::blocking::MessageIterator::for_match_rule(rule, &bus, None) else { return };
+        // Asked only once listening, so a lock in between isn't missed: Snowpuff may start behind the lock
+        // screen, as with automatic login.
+        if let Ok(reply) = bus.call_method(
+            Some("org.freedesktop.ScreenSaver"),
+            "/org/freedesktop/ScreenSaver",
+            Some("org.freedesktop.ScreenSaver"),
+            "GetActive",
+            &(),
+        ) && let Ok(locked) = reply.body().deserialize::<bool>()
+            && commands.send(Command::Locked(locked)).is_err()
+        {
+            return;
+        }
+        for message in messages.flatten() {
+            if let Ok(locked) = message.body().deserialize::<bool>()
+                && commands.send(Command::Locked(locked)).is_err()
+            {
+                return;
+            }
+        }
+    });
+}
+
+impl App {
+    fn command(&mut self, command: Command) {
+        match command {
+            Command::Quit => self.quit = true,
+            Command::Intensity(intensity) => {
+                self.settings.intensity = (intensity * 100.0).round() as u32;
+                let now = Instant::now();
+                self.screens.iter_mut().for_each(|screen| {
+                    screen.simulation.set_intensity(intensity);
+                    screen.wake(now);
+                });
+            }
+            Command::FallingOpacity(opacity) => {
+                self.settings.opacity = (opacity * 100.0).round() as u32;
+                self.screens.iter_mut().for_each(|screen| screen.simulation.falling_opacity = opacity);
+            }
+            Command::Ground(on) => {
+                self.settings.ground = on;
+                let accumulates = self.settings.accumulates();
+                self.screens.iter_mut().for_each(|screen| {
+                    screen.simulation.ground_settles = on;
+                    screen.simulation.accumulates = accumulates;
+                });
+            }
+            Command::Panel(on) => {
+                self.settings.panel = on;
+                let (accumulates, windows) = (self.settings.accumulates(), self.settings.snow_on_windows);
+                self.screens.iter_mut().for_each(|screen| {
+                    screen.panel = on;
+                    screen.simulation.accumulates = accumulates;
+                    if windows { screen.rewatch() } else { screen.drop_window_snow() }
+                });
+            }
+            Command::Wallpaper(on) => {
+                self.settings.wallpaper = on;
+                let accumulates = self.settings.accumulates();
+                self.screens.iter_mut().for_each(|screen| screen.simulation.accumulates = accumulates);
+                self.follow_pictures();
+            }
+            Command::Depth(on) => {
+                self.settings.depth = on;
+                self.follow_pictures();
+            }
+            Command::Melt(on) => {
+                self.settings.melt = on;
+                self.screens.iter_mut().for_each(|screen| screen.simulation.thaws = on);
+            }
+            Command::SnowOnWindows(on) => {
+                self.settings.snow_on_windows = on;
+                let accumulates = self.settings.accumulates();
+                self.screens.iter_mut().for_each(|screen| screen.simulation.accumulates = accumulates);
+                if on {
+                    self.screens.iter_mut().for_each(Screen::rewatch);
+                } else {
+                    self.screens.iter_mut().for_each(Screen::drop_window_snow);
+                }
+            }
+            Command::BehindWindows(on) => {
+                self.settings.behind_windows = on;
+                let over = self.settings.over_full_screen;
+                self.screens.iter_mut().for_each(|screen| screen.set_layer(on, over));
+            }
+            Command::Performance(max) => {
+                self.settings.max_performance = max;
+                self.screens.iter_mut().for_each(|screen| screen.max_rate = max);
+            }
+            Command::OverFullScreen(on) => {
+                self.settings.over_full_screen = on;
+                let behind = self.settings.behind_windows;
+                self.screens.iter_mut().for_each(|screen| screen.set_layer(behind, on));
+                if !on && self.screens.iter_mut().fold(false, |left, screen| screen.leave_full_screen() || left) {
+                    self.place_screens();
+                }
+            }
+            Command::ShowInScreenshots(on) => {
+                self.settings.show_in_screenshots = on;
+                self.source.show_in_screenshots(&self.bus, on);
+            }
+            Command::Holidays { halloween, new_year } => {
+                self.settings.halloween = halloween;
+                self.settings.new_year = new_year;
+                self.update_light();
+            }
+            Command::FightInvite => match &self.room.invite {
+                Some(invite) => {
+                    fight::copy(&snowpuff_core::snowman::room::link(invite));
+                    self.say(tr("fight.copied"));
+                }
+                None => self.opening = Some(fight::open(&mut self.room, None)),
+            },
+            Command::FightJoin => match fight::pasted().filter(|text| snowpuff_core::snowman::room::holds_invite(text)) {
+                Some(text) => self.opening = Some(fight::open(&mut self.room, Some(text))),
+                None => self.say(tr("fight.nolink")),
+            },
+            Command::FightLeave => {
+                self.opening = None;
+                fight::leave(&mut self.room);
+            }
+            Command::ClearSnow(calm) => {
+                let direction = self.screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
+                self.screens.iter_mut().for_each(|screen| screen.simulation.blow_away(direction, calm));
+            }
+            Command::Mode { picked, calm } => {
+                self.settings.picked = picked;
+                let modes = self.settings.picked.modes();
+                let direction = self.screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
+                let now = Instant::now();
+                self.screens.iter_mut().for_each(|screen| {
+                    screen.simulation.switch_modes(&modes, direction, calm);
+                    screen.wake(now);
+                });
+                self.update_light();
+            }
+            Command::Locked(locked) => {
+                if locked == self.locked {
+                    return;
+                }
+                self.locked = locked;
+                if !locked {
+                    self.screens.iter_mut().for_each(Screen::resume);
+                }
+                log!("locked: {locked}");
+            }
+            Command::Power(budget) => {
+                if budget == self.budget {
+                    return;
+                }
+                self.budget = budget;
+                log!("power: {budget:?}");
+                self.screens.iter_mut().for_each(|screen| screen.simulation.set_density(density(budget)));
+            }
+            Command::Backdrops(shades) => {
+                for screen in &mut self.screens {
+                    screen.update_backdrop(&shades, &self.gpu);
+                }
+                self.shades = shades;
+            }
+            Command::Light(light) => {
+                if let Some(tray) = &self.tray {
+                    tray.update(|tray| tray.light = light);
+                }
+            }
+        }
+    }
+
+    /// How long the loop may sleep: until the next frame is due, or for good while the snow is paused.
+    fn timeout(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let chores = self.chores_at.saturating_duration_since(now);
+        if self.locked {
+            return Some(chores);
+        }
+        let frame = self.screens.iter().map(|screen| screen.next_due.saturating_duration_since(now)).min();
+        Some(frame.map_or(chores, |frame| frame.min(chores)))
+    }
+
+    fn tick(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+        let report = self.shared.report();
+        if report.0 != self.report.0 {
+            if let Some(next) = &report.1
+                && self.report.1.as_deref().map(window_order) != Some(window_order(next))
+            {
+                log!("windows front to back: {}", window_list(next));
+            }
+            self.report = report;
+            self.place_screens();
+            self.hand_over(now);
+        }
+        // Display changes come in bursts; the layout is read once they settle.
+        if let Some(changed_at) = self.displays_changed_at
+            && now - changed_at > Duration::from_millis(400)
+        {
+            self.displays_changed_at = None;
+            self.sync_screens();
+            let _ = self.backdrops_wanted.send(());
+        }
+
+        if now >= self.chores_at {
+            self.chores_at = now + Duration::from_secs(1);
+            if now >= self.light_at {
+                self.light_at = now + Duration::from_secs(60);
+                self.update_light();
+            }
+        }
+
+        if self.locked {
+            self.shared.set_demand(Demand::Off, false);
+            return Ok(());
+        }
+        // Behind the windows the snow still settles on them: what lies on a window's top edge is above it, in plain view.
+        let snow_on_windows = self.settings.snow_on_windows;
+        // A drag starting is drawn right away instead of at the next calm frame.
+        if self.shared.take_started_moving() && snow_on_windows {
+            self.screens.iter_mut().for_each(|screen| screen.wake(now));
+        }
+        let cursor = self.shared.cursor();
+        let time = (now - self.started).as_secs_f32() % 1000.0;
+        let ambient = Ambient { light: self.light, shadow_tint: [0.0; 4], night: self.night, lantern: V2::ZERO };
+        let report = self.report.1.clone();
+        let windows = report.as_deref().map(|report| (report, self.report.0, report.moving));
+        if let Some(report) = report.as_deref() {
+            self.lend(report, snow_on_windows, now);
+        }
+        let mut released = false;
+        let mut reshaped = false;
+        let mut gpu_lost = false;
+        // The New Year's countdown and midnight by the clock, and how often rockets go up.
+        let (celebration, rockets) = if self.new_year {
+            let local = light::now();
+            (new_year::celebration(local, (now - self.started).as_secs_f64()), new_year::fireworks_per_minute(local))
+        } else {
+            (None, 0.0)
+        };
+        for screen in self.screens.iter_mut().filter(|screen| screen.next_due <= now) {
+            screen.simulation.celebration = celebration;
+            screen.simulation.fireworks_per_minute = rockets;
+            // Shown over a full-screen app, the snow reaches the display's edges while the app has put the panels away,
+            // so the drift lies along the bottom instead of over a panel no longer there. An overview isn't an app.
+            if self.settings.over_full_screen && !self.settings.behind_windows {
+                let in_front = report.as_deref().filter(|report| !report.hidden).and_then(|report| windows::covering(report, &screen.bounds));
+                reshaped |= screen.follow_full_screen(in_front.is_some(), now);
+            }
+            let covering =
+                if self.settings.over_full_screen { None } else { report.as_deref().and_then(|report| windows::covering(report, &screen.bounds)) };
+            if covering.is_some() != screen.covered() {
+                log!("{} {}", screen.name, covering.map_or("uncovered".to_string(), |class| format!("covered by {class}")));
+                screen.set_covered(covering.is_some());
+            }
+            if screen.hidden() {
+                screen.next_due = now + Duration::from_millis(250);
+                continue;
+            }
+            let began = Instant::now();
+            match screen.frame(&mut self.gpu, &self.qh, now, self.budget, ambient, time, cursor, windows, snow_on_windows) {
+                Ok(drew) => {
+                    self.stats.frame(drew, began.elapsed(), screen.simulation.sprite_count());
+                    released |= screen.simulation.take_snowfall_released();
+                }
+                Err(error) => gpu_lost |= screen.failing() || error.contains(&khronos_egl::Error::ContextLost.to_string()),
+            }
+        }
+        let (frost, fighting) = (self.settings.wallpaper, self.settings.fights());
+        self.play(now);
+        let hint = if self.settings.fight_throws < 3 { tr("fight.hint.snowman") } else { "" };
+        for (index, screen) in self.screens.iter_mut().enumerate() {
+            screen.tick_picture(&mut self.gpu, &self.compositor, frost, fighting, &mut self.room, index == 0, hint, now);
+            for hit in screen.take_hits() {
+                snowpuff_net::play::throw(&hit);
+            }
+        }
+        self.keep_picture(now);
+        if gpu_lost {
+            self.renew_gpu(now);
+        }
+        if released {
+            self.screens.iter_mut().for_each(|screen| screen.simulation.set_snowfall_held(false));
+        }
+        self.pass_snow(now);
+        if reshaped {
+            self.place_screens();
+        }
+        self.tell_demand();
+        self.stats.report(Instant::now());
+        Ok(())
+    }
+
+    /// Tells the compositor's sources what the snow needs: nothing while no display shows it, the windows now and then
+    /// while no snow shows, and the pointer while there is anything for it to part. The windows stay followed closely
+    /// with snow on windows off too, since the same answers move the ground with the panels.
+    fn tell_demand(&self) {
+        let awake = self.screens.iter().any(|screen| !screen.stalled());
+        let busy = self.screens.iter().any(|screen| !screen.stalled() && !screen.hidden() && !screen.simulation.is_empty());
+        let windows = if !awake {
+            Demand::Off
+        } else if busy {
+            Demand::Live
+        } else {
+            Demand::Calm
+        };
+        self.shared.set_demand(windows, busy);
+    }
+
+    /// Starts the graphics again after the driver lost them, as after a GPU reset or some suspends; each display's
+    /// surface is made again on the new ones at its next frame.
+    fn renew_gpu(&mut self, now: Instant) {
+        if self.gpu_renewed_at.is_some_and(|at| now - at < Duration::from_secs(10)) {
+            return;
+        }
+        self.gpu_renewed_at = Some(now);
+        self.screens.iter_mut().for_each(|screen| screen.drop_surface(&self.gpu));
+        match Gpu::new(self.wayland.backend().display_ptr().cast()) {
+            Ok(gpu) => {
+                self.gpu = gpu;
+                log!("graphics lost; started again on {}", self.gpu.adapter);
+            }
+            Err(error) => log!("graphics lost; starting again failed: {error}"),
+        }
+    }
+
+    /// The light of the hour, and the holiday with it: Halloween's ghosts, its night and the tray's pumpkin, or the New
+    /// Year's fir and the tray's fir.
+    fn update_light(&mut self) {
+        let today = light::today();
+        let new_year_today = light::new_year_today();
+        if today != self.today || new_year_today != self.new_year_today {
+            self.today = today;
+            self.new_year_today = new_year_today;
+            if let Some(tray) = &self.tray {
+                tray.update(|tray| {
+                    tray.today = today;
+                    tray.new_year_today = new_year_today;
+                });
+            }
+        }
+        let settings = &self.settings;
+        let holiday = new_year::holiday(settings.picked.modes() == [Mode::Snow], settings.new_year, new_year_today, settings.halloween, today);
+        let (halloween, festive) = (holiday == Some(Holiday::Halloween), holiday == Some(Holiday::NewYear));
+        if halloween != self.halloween || festive != self.new_year {
+            self.halloween = halloween;
+            self.new_year = festive;
+            log!("holiday: {holiday:?}");
+            let now = Instant::now();
+            self.screens.iter_mut().for_each(|screen| {
+                screen.simulation.set_halloween(halloween);
+                screen.simulation.set_new_year(festive);
+                screen.wake(now);
+            });
+        }
+        self.light = daylight();
+        self.night = light::night(halloween);
+    }
+
+    /// One overlay per display: new displays get snow, removed ones lose theirs.
+    fn sync_screens(&mut self) {
+        let mut current = std::mem::take(&mut self.screens);
+        for output in self.outputs.outputs() {
+            let Some(info) = self.outputs.info(&output) else { continue };
+            let (Some(name), Some(position), Some(size)) = (info.name.clone(), info.logical_position, info.logical_size) else { continue };
+            let bounds = Area { x: position.0 as f64, y: position.1 as f64, w: size.0 as f64, h: size.1 as f64 };
+            if let Some(index) = current.iter().position(|screen| screen.name == name && screen.output == output) {
+                let mut screen = current.swap_remove(index);
+                screen.bounds = bounds;
+                self.screens.push(screen);
+                continue;
+            }
+            let refresh = info.modes.iter().find(|mode| mode.current).map_or(60, |mode| (mode.refresh_rate as f32 / 1000.0).round() as u32);
+            log!("display {name}: {bounds:?}, scale {}, {refresh} Hz", info.scale_factor);
+            let mut simulation = new_simulation(&bounds, &self.settings, self.budget);
+            simulation.set_halloween(self.halloween);
+            simulation.set_new_year(self.new_year);
+            let mut screen = Screen::new(
+                (&self.compositor, &self.layer_shell, &self.qh),
+                output.clone(),
+                name,
+                bounds,
+                refresh,
+                simulation,
+                screen::layer_for(self.settings.behind_windows, self.settings.over_full_screen),
+            );
+            screen.max_rate = self.settings.max_performance;
+            screen.panel = self.settings.panel;
+            if self.settings.reads_wallpaper() {
+                let picture = PictureSnow::new((&self.compositor, &self.layer_shell, &self.qh), &output, &screen.name);
+                screen.picture = Some(picture);
+                screen.update_backdrop(&self.shades, &self.gpu);
+            }
+            self.screens.push(screen);
+        }
+        for screen in current {
+            log!("display {} gone", screen.name);
+            screen.release(&self.gpu);
+        }
+        self.place_screens();
+    }
+
+    /// Moves a window's snow to the display it now belongs to, as when it is dragged across: each display has
+    /// a simulation of its own, and the window's snow would otherwise fall off the old one's edge and be lost.
+    fn hand_over(&mut self, now: Instant) {
+        let Some(report) = self.report.1.clone() else { return };
+        let mut owners = HashMap::new();
+        for window in &report.windows {
+            let Some(owner) = windows::owner(&report, window) else { continue };
+            let id = windows::window_id(&window.id);
+            if let Some(previous) = self.owners.get(&id).cloned()
+                && previous != owner
+            {
+                self.move_snow(id, &previous, owner, now);
+            }
+            owners.insert(id, owner.to_string());
+        }
+        self.owners = owners;
+    }
+
+    fn move_snow(&mut self, id: WindowId, from: &str, to: &str, now: Instant) {
+        let (Some(a), Some(b)) = (self.screens.iter().position(|s| s.name == from), self.screens.iter().position(|s| s.name == to)) else {
+            return;
+        };
+        let Some(snow) = self.screens[a].simulation.take_window(id) else { return };
+        let (old, new) = (self.screens[a].area(), self.screens[b].area());
+        // Overlay coordinates run right and up from each overlay's bottom left.
+        let shift = V2::new((old.x - new.x) as f32, (new.bottom() - old.bottom()) as f32);
+        self.screens[b].simulation.adopt_window(id, snow, Mapping::shift(shift));
+        self.screens[a].rewatch();
+        self.screens[b].rewatch();
+        self.screens[b].wake(now);
+        log!("window snow from {from} to {to}");
+    }
+
+    /// Gives each display about to draw the snow of windows reaching over it that another display keeps.
+    fn lend(&mut self, report: &Report, snow_on_windows: bool, now: Instant) {
+        for index in 0..self.screens.len() {
+            if self.screens[index].next_due > now {
+                continue;
+            }
+            let borrowed = if snow_on_windows { self.borrowed(index, report) } else { Vec::new() };
+            self.screens[index].simulation.set_borrowed(borrowed);
+        }
+    }
+
+    /// The snow of windows kept by other displays, where it reaches over display `index`, in its coordinates: a
+    /// window lying across two displays keeps its drift in one piece instead of ending at the edge.
+    fn borrowed(&self, index: usize, report: &Report) -> Vec<Borrowed> {
+        let screen = &self.screens[index];
+        let here = screen.area();
+        let mut borrowed = Vec::new();
+        for window in &report.windows {
+            let id = windows::window_id(&window.id);
+            let Some(owner) = self.owners.get(&id).filter(|owner| **owner != screen.name) else { continue };
+            // The drift stands above the window's top edge, never as high as this.
+            let near = window.x < here.right() && window.x + window.w > here.x && window.y - 300.0 < here.bottom() && window.y + 20.0 > here.y;
+            let Some(home) = self.screens.iter().find(|other| other.name == *owner).filter(|_| near) else { continue };
+            let Some(lent) = home.simulation.lend(id) else { continue };
+            let there = home.area();
+            let lent = lent.mapped(Mapping::shift(V2::new((there.x - here.x) as f32, (here.bottom() - there.bottom()) as f32)));
+            let [left, bottom, right, top] = lent.bounds();
+            if right > 0.0 && left < here.w as f32 && top > 0.0 && bottom < here.h as f32 {
+                borrowed.push(lent);
+            }
+        }
+        borrowed
+    }
+
+    /// Passes on the snow that went from one display to another this frame: snow that fell on a window's drift
+    /// lent by another display goes to that one, and snow thrown past an edge two displays share goes on falling
+    /// on the other side. A display resting wakes for what it gets.
+    fn pass_snow(&mut self, now: Instant) {
+        for index in 0..self.screens.len() {
+            let here = self.screens[index].area();
+            for caught in self.screens[index].simulation.take_caught() {
+                let Some(owner) = self.owners.get(&caught.id) else { continue };
+                let Some(home) = self.screens.iter_mut().find(|other| other.name == *owner) else { continue };
+                let shift = V2::new((here.x - home.area().x) as f32, 0.0);
+                home.simulation.catch(&caught, Mapping::shift(shift));
+                home.stir(now);
+            }
+            let mut passed: Vec<(usize, Vec<Stray>)> = Vec::new();
+            for stray in self.screens[index].simulation.take_strays() {
+                let point = stray.position();
+                let (x, y) = (here.x + point.x as f64, here.bottom() - point.y as f64);
+                let Some(next) = self.screens.iter().enumerate().position(|(other, screen)| {
+                    let there = screen.area();
+                    other != index && !screen.covered() && x >= there.x && x < there.right() && y < there.bottom()
+                }) else {
+                    continue;
+                };
+                match passed.iter_mut().find(|(other, _)| *other == next) {
+                    Some((_, strays)) => strays.push(stray),
+                    None => passed.push((next, vec![stray])),
+                }
+            }
+            for (next, strays) in passed {
+                let there = self.screens[next].area();
+                let shift = V2::new((here.x - there.x) as f32, (there.bottom() - here.bottom()) as f32);
+                self.screens[next].simulation.adopt_strays(strays, Mapping::shift(shift));
+                self.screens[next].stir(now);
+            }
+        }
+    }
+
+    /// Fits each overlay to its display's work area, and tells each simulation where its walls are.
+    fn place_screens(&mut self) {
+        let Some(report) = self.report.1.clone() else { return };
+        for screen in &mut self.screens {
+            let Some(display) = report.screens.iter().find(|display| display.name == screen.name) else { continue };
+            screen.place(Area::bounds(display), Area::work(display), windows::shelf(&report, display));
+            let walls = windows::walls(display, &report.screens);
+            screen.simulation.walls = walls;
+            screen.simulation.neighbours = (!walls.0, !walls.1);
+        }
+    }
+}
+
+/// The reported windows by app, front to back, for the log.
+fn window_order(report: &Report) -> String {
+    report.windows.iter().map(|window| window.class.as_str()).collect::<Vec<_>>().join(", ")
+}
+
+/// The reported windows with where they are, for telling which one the snow lies on.
+fn window_list(report: &Report) -> String {
+    let window = |window: &crate::source::Window| {
+        let solid = if window.solid { "" } else { ", not solid" };
+        format!("{} ({}x{} at {},{}{solid})", window.class, window.w, window.h, window.x, window.y)
+    };
+    report.windows.iter().map(window).collect::<Vec<_>>().join(", ")
+}
+
+impl App {
+    /// Plays in the snowball fight's room: goes on opening it once the site has answered, hands the room what the network
+    /// said, has the snowmen show the throws others made, and shows the room in the tray as it changes.
+    fn play(&mut self, now: Instant) {
+        let seconds = (now - self.started).as_secs_f64();
+        for link in self.shared.take_links() {
+            if !self.settings.fights() {
+                log!("fight: a link to a room, with the fight off");
+            } else if snowpuff_core::snowman::room::holds_invite(&link) {
+                if self.room.state != snowpuff_core::snowman::room::State::None {
+                    fight::leave(&mut self.room);
+                }
+                self.opening = Some(fight::open(&mut self.room, Some(link)));
+            }
+        }
+        if let Some(opening) = &self.opening
+            && fight::go_on(opening, &mut self.room)
+        {
+            self.opening = None;
+        }
+        let me = self.room.me().map(str::to_string);
+        for (from, at) in fight::listen(&mut self.room, seconds) {
+            if let (Some(me), Some(screen)) = (&me, self.screens.first_mut()) {
+                screen.thrown(&from, &at, me);
+            }
+        }
+        self.room.tick(seconds);
+        let noticed = self.notice.is_some_and(|until| std::time::Instant::now() < until);
+        if !noticed && (self.room.version != self.room_shown || self.notice.is_some()) {
+            self.notice = None;
+            self.room_shown = self.room.version;
+            let (status, hosting, inside) =
+                (fight::status(&self.room), self.room.invite.is_some(), self.room.state != snowpuff_core::snowman::room::State::None);
+            if let Some(tray) = &self.tray {
+                tray.update(|tray| tray.fight = (status, hosting, inside));
+            }
+        }
+    }
+
+    /// Says in the menu what was just done, for a few seconds.
+    fn say(&mut self, text: &str) {
+        self.notice = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+        if let Some(tray) = &self.tray {
+            let text = text.to_string();
+            tray.update(move |tray| tray.fight.0 = Some(text));
+        }
+    }
+
+    /// Keeps how much snow lies in the wallpaper for the next run, now and then while it changes.
+    fn keep_picture(&mut self, now: Instant) {
+        if now - self.picture_kept_at < Duration::from_secs(60) {
+            return;
+        }
+        self.picture_kept_at = now;
+        let Some(level) = self.screens.iter().find(|screen| screen.picture.is_some()).map(|screen| screen.simulation.picture_level()) else { return };
+        let kept = (level * 1000.0).round() as u32;
+        if kept.abs_diff(self.settings.picture_level) >= 20 {
+            self.settings.picture_level = kept;
+            self.settings.save();
+        }
+    }
+
+    /// Reads the wallpapers, or stops, as Accumulate's Wallpaper and Deep Interaction now want.
+    fn follow_pictures(&mut self) {
+        let wanted = self.settings.reads_wallpaper();
+        for screen in &mut self.screens {
+            screen.simulation.picture_frost = self.settings.wallpaper;
+            screen.simulation.picture_depth = self.settings.depth;
+            match (wanted, screen.picture.is_some()) {
+                (true, false) => {
+                    screen.picture = Some(PictureSnow::new((&self.compositor, &self.layer_shell, &self.qh), &screen.output, &screen.name));
+                    screen.update_backdrop(&self.shades, &self.gpu);
+                }
+                (false, true) => screen.drop_picture(&self.gpu),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn new_simulation(bounds: &Area, settings: &Settings, budget: PowerBudget) -> SnowSimulation {
+    let mut simulation = SnowSimulation::new(bounds.w as f32, bounds.h as f32, settings.intensity as f32 / 100.0);
+    simulation.thaws = settings.melt;
+    simulation.accumulates = settings.accumulates();
+    simulation.ground_settles = settings.ground;
+    simulation.picture_frost = settings.wallpaper;
+    simulation.picture_depth = settings.depth;
+    simulation.restore_picture(settings.picture_level as f32 / 1000.0);
+    simulation.falling_opacity = settings.opacity as f32 / 100.0;
+    simulation.set_modes(&settings.picked.modes());
+    simulation.set_density(density(budget));
+    simulation
+}
+
+/// Power saver makes do with a little less snow.
+fn density(budget: PowerBudget) -> f32 {
+    if budget == PowerBudget::Saver { 0.75 } else { 1.0 }
+}
+
+/// What a frame costs, written to the log twice a minute.
+struct Stats {
+    since: Instant,
+    steps: u32,
+    draws: u32,
+    busy: Duration,
+    sprites: usize,
+}
+
+impl Stats {
+    fn new(now: Instant) -> Stats {
+        Stats { since: now, steps: 0, draws: 0, busy: Duration::ZERO, sprites: 0 }
+    }
+
+    fn frame(&mut self, drew: bool, busy: Duration, sprites: usize) {
+        self.steps += 1;
+        self.draws += drew as u32;
+        self.busy += busy;
+        self.sprites = self.sprites.max(sprites);
+    }
+
+    fn report(&mut self, now: Instant) {
+        let elapsed = (now - self.since).as_secs_f64();
+        if elapsed < 30.0 {
+            return;
+        }
+        let busy = self.busy.as_secs_f64();
+        log!(
+            "frames: {:.1} steps/s, {:.1} draws/s, {:.0} µs per step, {:.2}% of a core, up to {} sprites",
+            self.steps as f64 / elapsed,
+            self.draws as f64 / elapsed,
+            busy * 1e6 / self.steps.max(1) as f64,
+            busy / elapsed * 100.0,
+            self.sprites
+        );
+        *self = Stats::new(now);
+    }
+}
+
+impl SeatHandler for App {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+
+    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
+        if capability == Capability::Pointer
+            && let Ok(pointer) = self.seat.get_pointer(qh, &seat)
+        {
+            self.pointers.push(pointer);
+        }
+    }
+
+    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, capability: Capability) {
+        if capability == Capability::Pointer {
+            for pointer in self.pointers.drain(..) {
+                pointer.release();
+            }
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for App {
+    /// A click reaches us only over a snowman in the wallpaper: everywhere else the layers take none.
+    fn pointer_frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wayland_client::protocol::wl_pointer::WlPointer, events: &[PointerEvent]) {
+        const LEFT_BUTTON: u32 = 0x110;
+        for event in events {
+            if let PointerEventKind::Press { button: LEFT_BUTTON, .. } = event.kind {
+                let now = Instant::now();
+                if self.screens.iter_mut().any(|screen| screen.click_picture(&event.surface, event.position, now)) && self.settings.fight_throws < 3 {
+                    self.settings.fight_throws += 1;
+                    self.settings.save();
+                }
+            }
+        }
+    }
+}
+
+impl CompositorHandler for App {
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
+
+    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
+
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _: u32) {
+        if let Some(screen) = self.screens.iter_mut().find(|screen| screen.owns(surface)) {
+            screen.shown();
+        }
+    }
+
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+
+    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+}
+
+impl OutputHandler for App {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.outputs
+    }
+
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.displays_changed_at = Some(Instant::now());
+    }
+
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.displays_changed_at = Some(Instant::now());
+    }
+
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
+        self.displays_changed_at = Some(Instant::now());
+    }
+}
+
+impl LayerShellHandler for App {
+    /// The compositor took the surface away, as when its display goes: the display sync makes a new one if needed.
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        if let Some(screen) = self.screens.iter_mut().find(|screen| screen.picture.as_ref().is_some_and(|picture| picture.is(layer))) {
+            log!("{}: wallpaper layer closed", screen.name);
+            screen.drop_picture(&self.gpu);
+            self.displays_changed_at = Some(Instant::now());
+            return;
+        }
+        if let Some(index) = self.screens.iter().position(|screen| screen.is(layer)) {
+            let screen = self.screens.swap_remove(index);
+            log!("{}: overlay closed", screen.name);
+            screen.release(&self.gpu);
+            self.displays_changed_at = Some(Instant::now());
+        }
+    }
+
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {
+        let (width, height) = configure.new_size;
+        if let Some(screen) = self.screens.iter_mut().find(|screen| screen.is(layer)) {
+            screen.configure(&self.gpu, width, height);
+        } else if let Some(picture) = self.screens.iter_mut().find_map(|screen| screen.picture.as_mut().filter(|picture| picture.is(layer))) {
+            picture.configure(&self.gpu, width, height);
+        }
+    }
+}
+
+impl ProvidesRegistryState for App {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry
+    }
+    registry_handlers![OutputState, SeatState];
+}
+
+delegate_registry!(App);
+delegate_dispatch2!(App);

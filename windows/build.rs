@@ -4,10 +4,6 @@
 use std::path::Path;
 
 const ICON: &str = "assets/Snowpuff.ico";
-/// The tray's icons, as icon groups 2 to 5: a dark mark for a light taskbar and a light one for a dark taskbar,
-/// each also paused.
-const TRAY: [&str; 4] =
-    ["assets/tray-light-taskbar.ico", "assets/tray-light-taskbar-paused.ico", "assets/tray-dark-taskbar.ico", "assets/tray-dark-taskbar-paused.ico"];
 const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 const RT_VERSION: u16 = 16;
@@ -17,47 +13,22 @@ const ENGLISH: u16 = 0x0409;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={ICON}");
-    for tray in TRAY {
-        println!("cargo:rerun-if-changed={tray}");
-    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
     let version = env!("CARGO_PKG_VERSION");
     let icon_file = std::fs::read(ICON).expect("icon");
-    let tray_files: Vec<Vec<u8>> = TRAY.iter().map(|path| std::fs::read(path).expect("tray icon")).collect();
     for (binary, description) in [("Snowpuff", "Snowpuff"), ("Snowpuff-Setup", "Snowpuff Setup")] {
         // A .res file opens with an empty entry.
         let mut res = vec![0, 0, 0, 0, 32, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0];
         res.extend([0; 16]);
-        let mut next = icon(&mut res, &icon_file, 1, 1);
-        if binary == "Snowpuff" {
-            for (k, file) in tray_files.iter().enumerate() {
-                next = icon(&mut res, file, k as u16 + 2, next);
-            }
-        }
+        icon(&mut res, &icon_file);
         entry(&mut res, RT_VERSION, 1, ENGLISH, &version_info(version, description, &format!("{binary}.exe")));
         entry(&mut res, RT_MANIFEST, 1, ENGLISH, manifest(version).as_bytes());
 
         let path = Path::new(&std::env::var("OUT_DIR").unwrap()).join(format!("{binary}.res"));
         std::fs::write(&path, res).expect("resources");
-        // Microsoft's linker takes the .res as it is; GNU's needs it as an object file, which windres makes.
-        let linked = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
-            let object = path.with_extension("o");
-            let windres = std::env::var("WINDRES").unwrap_or_else(|_| "x86_64-w64-mingw32-windres".into());
-            let status = std::process::Command::new(&windres)
-                .args(["--input-format=res", "--output-format=coff", "-i"])
-                .arg(&path)
-                .arg("-o")
-                .arg(&object)
-                .status()
-                .expect("windres");
-            assert!(status.success(), "windres failed");
-            object
-        } else {
-            path
-        };
-        println!("cargo:rustc-link-arg-bin={binary}={}", linked.display());
+        println!("cargo:rustc-link-arg-bin={binary}={}", path.display());
     }
 }
 
@@ -76,22 +47,20 @@ fn entry(res: &mut Vec<u8>, kind: u16, name: u16, language: u16, data: &[u8]) {
     pad(res);
 }
 
-/// Each image of the .ico becomes an icon resource, numbered from `first`; group `group` lists them with resource ids
-/// in place of file offsets. Returns the next free icon id.
-fn icon(res: &mut Vec<u8>, file: &[u8], group: u16, first: u16) -> u16 {
+/// Each image of the .ico becomes an icon resource; a group lists them with resource ids in place of file offsets.
+fn icon(res: &mut Vec<u8>, file: &[u8]) {
     let count = u16::from_le_bytes([file[4], file[5]]) as usize;
-    let mut group_bytes = file[..6].to_vec();
+    let mut group = file[..6].to_vec();
     for i in 0..count {
         let record = &file[6 + 16 * i..6 + 16 * (i + 1)];
         let length = u32::from_le_bytes(record[8..12].try_into().unwrap()) as usize;
         let offset = u32::from_le_bytes(record[12..16].try_into().unwrap()) as usize;
-        let id = first + i as u16;
+        let id = i as u16 + 1;
         entry(res, RT_ICON, id, ENGLISH, &file[offset..offset + length]);
-        group_bytes.extend(&record[..12]);
-        group_bytes.extend(id.to_le_bytes());
+        group.extend(&record[..12]);
+        group.extend(id.to_le_bytes());
     }
-    entry(res, RT_GROUP_ICON, group, ENGLISH, &group_bytes);
-    first + count as u16
+    entry(res, RT_GROUP_ICON, 1, ENGLISH, &group);
 }
 
 fn version_info(version: &str, description: &str, filename: &str) -> Vec<u8> {
@@ -102,11 +71,11 @@ fn version_info(version: &str, description: &str, filename: &str) -> Vec<u8> {
         fixed.extend((value as u32).to_le_bytes());
     }
     let strings = [
-        ("CompanyName", "Snowpuff"),
+        ("CompanyName", "ehroz.pro"),
         ("FileDescription", description),
         ("FileVersion", version),
         ("InternalName", "Snowpuff"),
-        ("LegalCopyright", "© 2026 Snowpuff. Based on Snowhush © 2026 Mykhailo Bezruchko (MIT)"),
+        ("LegalCopyright", "© 2026 Snowpuff (ehroz.pro). Based on Snowhush © 2026 Mykhailo Bezruchko, PolyForm Noncommercial 1.0.0"),
         ("OriginalFilename", filename),
         ("ProductName", "Snowpuff"),
         ("ProductVersion", version),

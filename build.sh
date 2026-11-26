@@ -4,14 +4,16 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# The Rust core, which the app links, for both architectures in one library.
-export MACOSX_DEPLOYMENT_TARGET=14.0
+minimum=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Resources/Info.plist)
+export MACOSX_DEPLOYMENT_TARGET="$minimum"
+
+# The Rust the app links, for both architectures in one library: the rooms for snowball fights (net/) and Snowpuff's
+# extras, icicles and sounds (core/), through bridge/.
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
-    (cd core && cargo build --release --lib --target $target)
+    cargo build --quiet --release --manifest-path bridge/Cargo.toml --target "$target"
 done
-mkdir -p core/target/universal
-lipo -create core/target/aarch64-apple-darwin/release/libsnowpuff_core.a core/target/x86_64-apple-darwin/release/libsnowpuff_core.a \
-    -output core/target/universal/libsnowpuff_core.a
+mkdir -p build/rust
+lipo -create bridge/target/{aarch64,x86_64}-apple-darwin/release/libsnowpuff_mac.a -output build/rust/libsnowpuff_mac.a
 
 # One build per architecture, joined into one binary: a universal build needs Xcode, separate ones don't.
 binaries=()
@@ -25,14 +27,49 @@ done
 app=build/Snowpuff.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/Snowpuff"
+lipo -create "${binaries[@]}" -output build/Snowpuff-universal
+# Swift Build stamps the binary with the deployment target as its SDK, and macOS then draws the app in its old
+# look, without Liquid Glass.
+vtool -set-build-version macos "$minimum" "$(xcrun --sdk macosx --show-sdk-version)" -replace \
+    -output "$app/Contents/MacOS/Snowpuff" build/Snowpuff-universal 2>/dev/null \
+    || cp build/Snowpuff-universal "$app/Contents/MacOS/Snowpuff"
+# Local symbols serve only a debugger; without them the app is several megabytes lighter.
+strip -x "$app/Contents/MacOS/Snowpuff"
 cp Resources/Info.plist "$app/Contents/"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
-cp Resources/TrayIcon*.png "$app/Contents/Resources/"
-cp shaders/extras.shader "$app/Contents/Resources/"
-mkdir -p "$app/Contents/Resources/ru.lproj" "$app/Contents/Resources/en.lproj"
-printf '"NSMicrophoneUsageDescription" = "Snowpuff слушает микрофон только чтобы заметить, что ты дуешь на снег. Ничего не записывается и никуда не отправляется.";\n"NSLocationUsageDescription" = "«Погода за окном» включает снег или дождь, как у тебя на улице. Место округляется и нужно только чтобы узнать погоду на open-meteo.com.";\n"NSLocationWhenInUseUsageDescription" = "«Погода за окном» включает снег или дождь, как у тебя на улице. Место округляется и нужно только чтобы узнать погоду на open-meteo.com.";\n' > "$app/Contents/Resources/ru.lproj/InfoPlist.strings"
-printf '"NSMicrophoneUsageDescription" = "Snowpuff listens for a puff of breath so you can blow on the snow. Nothing is recorded or sent anywhere.";\n' > "$app/Contents/Resources/en.lproj/InfoPlist.strings"
+
+# The depth network that finds the tops of things in the wallpaper for snow to lie on: Apple's Core ML conversion of
+# Depth Anything V2 Small, palettized to 6 bits (Apache-2.0). Fetched once at a fixed revision, checked, compiled.
+model=DepthAnythingV2SmallF16P6
+models=build/models
+if [[ ! -d "$models/$model.mlmodelc" ]]; then
+    revision=cfef6f6f2a70783dedc0bfae40cecbc2052285d3
+    base="https://huggingface.co/apple/coreml-depth-anything-v2-small/resolve/$revision/$model.mlpackage"
+    package="$models/$model.mlpackage"
+    while read -r sum file; do
+        mkdir -p "$package/${file:h}"
+        curl -sfL --retry 3 -o "$package/$file" "$base/$file"
+        echo "$sum  $package/$file" | shasum -a 256 -c --quiet
+    done <<'FILES'
+70e469c0359c89851bde4cdc1d89bf13fa06d4fccd8907b9b5f744e548ecaadf Manifest.json
+ee53b8f7e1682a66857b5a3d54cf04a97d89a98cf7b5979b5d726aaf9c24ad70 Data/com.apple.CoreML/model.mlmodel
+3e9bcccc9e35ae6f9759551f481a3b77226510bd74536e059ee9780dda618381 Data/com.apple.CoreML/weights/weight.bin
+FILES
+    if xcrun --find coremlcompiler >/dev/null 2>&1; then
+        xcrun coremlcompiler compile "$package" "$models" >/dev/null
+    else
+        swift scripts/compile-model.swift "$package" "$models"
+    fi
+fi
+ditto "$models/$model.mlmodelc" "$app/Contents/Resources/$model.mlmodelc"
+cp Resources/ThirdParty/DepthAnything-LICENSE.txt "$app/Contents/Resources/"
+cp Resources/ThirdParty/Mac-Notices.txt "$app/Contents/Resources/ThirdPartyNotices.txt"
+cp LICENSE "$app/Contents/Resources/LICENSE.txt"
+for strings in locales/*.strings; do
+    lproj="$app/Contents/Resources/$(basename "$strings" .strings).lproj"
+    mkdir -p "$lproj"
+    plutil -convert binary1 -o "$lproj/Localizable.strings" "$strings"
+done
 
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"

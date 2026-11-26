@@ -1,0 +1,23 @@
+[package]
+name = "snowpuff-bridge"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The one Rust library the Mac app links: the rooms for snowball fights and Snowpuff's shared core"
+
+[lib]
+name = "snowpuff_mac"
+crate-type = ["staticlib"]
+
+[dependencies]
+snowpuff-net = { path = "../net" }
+snowpuff-core = { path = "../core" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release.build-override]
+strip = "none"

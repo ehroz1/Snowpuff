@@ -18,12 +18,18 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SW_SHOWNORMAL, SendMessageTimeoutW, WM_CLOSE,
 };
-use windows::core::{GUID, Interface, PCWSTR, w};
+use windows::core::{GUID, HSTRING, Interface, PCWSTR, w};
 
 const UNINSTALL: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Snowpuff");
 const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+const STARTUP_APPROVED: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run");
 const SETTINGS: PCWSTR = w!("Software\\Snowpuff");
+/// snowpuff:// links, to snowball fights, which Windows opens with Snowpuff.
+const LINKS: PCWSTR = w!("Software\\Classes\\snowpuff");
+const LINKS_COMMAND: PCWSTR = w!("Software\\Classes\\snowpuff\\shell\\open\\command");
 const NAME: PCWSTR = w!("Snowpuff");
+/// The licenses of the work of others the app carries, which go with it.
+const NOTICES: &str = include_str!("../../Resources/ThirdParty/Notices.txt");
 /// The app's hidden window, which a running Snowpuff always has.
 const CONTROLLER: PCWSTR = w!("SnowpuffController");
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -33,21 +39,16 @@ pub fn installed_version() -> Option<String> {
     read_string(UNINSTALL, w!("DisplayVersion"))
 }
 
-/// Where the installed app is, if it is.
+/// Puts the app in place and registers it, replacing an older copy. Returns where the app went.
+/// A running copy holds on to its file, so callers close it with `close_running` first.
+/// The installed app, if it is there.
 pub fn installed_exe() -> Option<PathBuf> {
     let exe = PathBuf::from(read_string(UNINSTALL, w!("InstallLocation"))?).join("Snowpuff.exe");
     exe.exists().then_some(exe)
 }
 
-/// Puts the app in place and registers it, replacing a running or older copy. Returns where the app went.
 pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
-    close_running();
-    // %LOCALAPPDATA%\Programs, which the known folder normally names; spelled out where the known folder isn't there.
-    let programs = known_folder(&FOLDERID_UserProgramFiles)
-        .or_else(|| known_folder(&FOLDERID_LocalAppData).map(|data| data.join("Programs")))
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(|data| PathBuf::from(data).join("Programs")))
-        .ok_or("the programs folder isn't available")?;
-    let folder = programs.join("Snowpuff");
+    let folder = known_folder(&FOLDERID_UserProgramFiles).ok_or("the programs folder isn't available")?.join("Snowpuff");
     std::fs::create_dir_all(&folder).map_err(|error| format!("couldn't create {}: {error}", folder.display()))?;
     let exe = folder.join("Snowpuff.exe");
     let staged = folder.join("Snowpuff.exe.new");
@@ -62,6 +63,7 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
         std::thread::sleep(Duration::from_millis(200));
     }
 
+    let _ = std::fs::write(folder.join("ThirdPartyNotices.txt"), NOTICES);
     if let Some(programs) = known_folder(&FOLDERID_Programs) {
         let _ = shortcut(&exe, &programs.join("Snowpuff.lnk"));
     }
@@ -72,12 +74,14 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     write_string(UNINSTALL, w!("DisplayIcon"), &exe.display().to_string());
     write_string(UNINSTALL, w!("InstallLocation"), &folder.display().to_string());
     write_string(UNINSTALL, w!("URLInfoAbout"), "https://snowpuff.ehroz.pro");
-    write_string(UNINSTALL, w!("HelpLink"), "https://github.com/ehroz1/Snowpuff");
     write_string(UNINSTALL, w!("UninstallString"), &format!("{quoted} --uninstall"));
     write_string(UNINSTALL, w!("QuietUninstallString"), &format!("{quoted} --uninstall --silent"));
     write_number(UNINSTALL, w!("NoModify"), 1);
     write_number(UNINSTALL, w!("NoRepair"), 1);
     write_number(UNINSTALL, w!("EstimatedSize"), app.len().div_ceil(1024) as u32);
+    write_string(LINKS, PCWSTR::null(), "URL:Snowpuff");
+    write_string(LINKS, w!("URL Protocol"), "");
+    write_string(LINKS_COMMAND, PCWSTR::null(), &format!("{quoted} \"%1\""));
     // Open at Login follows the app to where it now lives.
     if read_string(RUN, NAME).is_some() {
         write_string(RUN, NAME, &quoted);
@@ -85,9 +89,7 @@ pub fn install(app: &[u8], version: &str) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-/// Removes everything Snowpuff put on the computer, except the settings file in the roaming profile
-/// (`%APPDATA%\Snowpuff\settings.json`): installed again, Snowpuff picks up where it left off.
-/// The app's own folder goes a moment after this process exits.
+/// Removes everything Snowpuff put on the computer. The app's own folder goes a moment after this process exits.
 pub fn uninstall() {
     close_running();
     if let Some(programs) = known_folder(&FOLDERID_Programs) {
@@ -100,24 +102,15 @@ pub fn uninstall() {
     unsafe {
         let _ = RegDeleteTreeW(HKEY_CURRENT_USER, UNINSTALL);
         let _ = RegDeleteTreeW(HKEY_CURRENT_USER, SETTINGS);
+        let _ = RegDeleteTreeW(HKEY_CURRENT_USER, LINKS);
         let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME);
+        let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, STARTUP_APPROVED, NAME);
     }
     if let Some(folder) = folder.filter(|folder| folder.ends_with("Snowpuff")) {
         let _ = std::process::Command::new("cmd.exe")
             .raw_arg(format!("/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{folder}\""))
             .creation_flags(CREATE_NO_WINDOW)
             .spawn();
-    }
-}
-
-/// Opens Snowpuff at login, or stops it, for the copy at `exe`.
-pub fn set_open_at_login(exe: &Path, on: bool) {
-    if on {
-        write_string(RUN, NAME, &format!("\"{}\"", exe.display()));
-    } else {
-        unsafe {
-            let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME);
-        }
     }
 }
 
@@ -128,10 +121,10 @@ pub fn launch(exe: &Path) {
     }
 }
 
-/// Asks a running Snowpuff to quit and waits a few seconds for it to go.
-fn close_running() {
+/// Asks a running Snowpuff to quit and waits a few seconds for it to go. Returns whether one was running.
+pub fn close_running() -> bool {
     unsafe {
-        let Ok(window) = FindWindowW(CONTROLLER, PCWSTR::null()) else { return };
+        let Ok(window) = FindWindowW(CONTROLLER, PCWSTR::null()) else { return false };
         let mut process = 0;
         GetWindowThreadProcessId(window, Some(&mut process));
         let handle = OpenProcess(PROCESS_SYNCHRONIZE, false, process).ok();
@@ -143,6 +136,7 @@ fn close_running() {
             let _ = CloseHandle(handle);
         }
     }
+    true
 }
 
 fn shortcut(target: &Path, at: &Path) -> windows::core::Result<()> {
@@ -153,7 +147,7 @@ fn shortcut(target: &Path, at: &Path) -> windows::core::Result<()> {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         link.SetPath(PCWSTR(target_path.as_ptr()))?;
         link.SetWorkingDirectory(PCWSTR(folder.as_ptr()))?;
-        link.SetDescription(w!("Snow on your desktop"))?;
+        link.SetDescription(&HSTRING::from(snowpuff_core::text::tr("shortcut")))?;
         link.cast::<IPersistFile>()?.Save(PCWSTR(at.as_ptr()), true)
     }
 }

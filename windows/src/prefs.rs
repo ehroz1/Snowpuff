@@ -1,195 +1,150 @@
 use std::ffi::c_void;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+    HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
-use windows::core::{BOOL, HSTRING, PCWSTR, w};
+use windows::core::{BOOL, PCWSTR, w};
 
-use snowpuff::store::{self, Values};
-use snowpuff_core::simulation::Snowfall;
+use snowpuff_core::halloween::Choice;
+use snowpuff_core::modes::{self, Picked};
+use snowpuff_core::simulation::Mode;
 
 const KEY: PCWSTR = w!("Software\\Snowpuff");
 const RUN: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("Snowpuff");
+const STARTUP_APPROVED: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run");
 
 #[derive(Clone, Copy)]
 pub struct Settings {
-    pub snowfall: Snowfall,
-    pub accumulate: bool,
+    /// How much falls, in percent: 0 to 100 in steps of 5.
+    pub intensity: u32,
+    /// Snow and leaves settle along the bottom of the screen.
+    pub ground: bool,
     pub melt: bool,
     pub snow_on_windows: bool,
     pub behind_windows: bool,
+    /// The snow stays over full-screen apps instead of fading out of their way.
+    pub over_full_screen: bool,
     /// The snow settles at the bottom of the screen, under the taskbar, for a taskbar made see-through, as by TranslucentTB.
     pub behind_taskbar: bool,
     pub show_in_screenshots: bool,
+    /// The snow also settles on what the desktop draws without a window of its own: a selection dragged across it.
+    pub selection: bool,
+    /// Snow lies in the wallpaper's picture: Accumulate's Wallpaper.
+    pub wallpaper: bool,
+    /// Deep Interaction: the snow falls into the wallpaper's depth, behind what is nearer in it.
+    pub depth: bool,
+    /// How much snow lies in the wallpaper's picture, in thousandths, kept from one run to the next.
+    pub picture_level: u32,
+    /// Snowballs thrown, counted to three: until then the round tells how to throw.
+    pub fight_throws: u32,
     pub welcomed: bool,
-    /// Icicles along the bottom edges of windows with snow on them.
-    pub icicles: bool,
-    /// The foreground window glows warm onto the snow around it.
-    pub warm_glow: bool,
-    /// Blowing into the microphone blows the snow away.
-    pub puff: bool,
-    /// The snow and its sound step aside while another app uses the camera or microphone.
-    pub quiet_on_calls: bool,
-    /// The winter sound: 0 off, 1 wind, 2 fireplace, 3 both.
-    pub ambience: u32,
-    /// Its volume, in percent.
-    pub volume: u32,
-    /// Whether Snowpuff has added itself to the apps that open at login, which it does once.
-    pub login_offered: bool,
-    /// New versions from GitHub install themselves.
-    pub auto_update: bool,
-    /// The snow stays over full-screen apps and games instead of stepping out of their way.
-    pub over_full_screen: bool,
-    /// Whether leaves fall instead of snow.
-    pub autumn: bool,
-    /// Whether rain falls instead of snow or leaves.
-    pub rain: bool,
-    /// Every frame drawn at the display's full rate.
+    /// Unix seconds of the first run, or 0 for an install older than the stamp.
+    pub installed_at: u32,
+    pub halloween: Choice,
+    pub new_year: Choice,
+    /// What falls: the kind picked last, or two mixed.
+    pub picked: Picked,
+    /// Drawn at the display's highest rate all the time, instead of only while something is pushed around.
     pub max_performance: bool,
-    pub petals: bool,
-    pub hail: bool,
-    pub mix_rain: bool,
-    pub deep_interaction: bool,
-    pub blizzard: bool,
-    pub fog: bool,
-    pub stars: bool,
-    pub garland: bool,
-    pub frost: bool,
-    pub creatures: bool,
-    pub words: bool,
-    pub sound_effects: bool,
-    pub battery_saver: bool,
-    pub live_weather: bool,
-    /// How much of what falls shows, in percent.
+    /// How opaque what falls is drawn, in percent: 10 to 100 in steps of 5.
     pub opacity: u32,
-    /// Ctrl+Alt+letter shortcuts work anywhere.
-    pub hotkeys: bool,
-    /// The version whose news was last shown, as 10300 for 1.3.0.
-    pub seen_version: u32,
-
 }
 
 impl Settings {
-    /// The settings file wins; without one (a version from before it) the registry is read, and the next save
-    /// writes the file.
+    /// Whether snow settles anywhere.
+    pub fn accumulates(&self) -> bool {
+        self.ground || self.snow_on_windows || self.wallpaper
+    }
+
+    /// Whether the wallpaper is read at all: for the snow lying in it, its depth or both.
+    pub fn reads_wallpaper(&self) -> bool {
+        self.wallpaper || self.depth
+    }
+
+    /// Whether snowmen live in the wallpaper's picture for a snowball fight: only with its depth.
+    pub fn fights(&self) -> bool {
+        self.depth
+    }
+
     pub fn load() -> Settings {
-        let saved = store::read();
-        let read = |name: &str| match &saved {
-            Some(values) => values.get(name).copied(),
-            None => read(&HSTRING::from(name)),
-        };
         let calm = !animations_enabled();
-        let snowfall = read("snowfall").and_then(|i| Snowfall::ALL.get(i as usize).copied());
+        // Before the slider, the intensity was one of Off, Light, Steady, Heavy and Variable.
+        let stop = read(w!("snowfall")).map(|i| i.min(4) as usize);
+        let welcomed = read(w!("welcomed")).is_some_and(|v| v != 0);
+        let installed_at = read(w!("installedAt")).unwrap_or_else(|| {
+            let stamp = if welcomed { 0 } else { now() };
+            write(w!("installedAt"), stamp);
+            stamp
+        });
+        // Before Accumulate picked where snow settles, it turned settling off everywhere at once.
+        let settled = read(w!("accumulate")).is_none_or(|v| v != 0) || read(w!("settleGround")).is_some();
         Settings {
-            snowfall: snowfall.unwrap_or(if calm { Snowfall::Light } else { Snowfall::Steady }),
-            accumulate: read("accumulate").is_none_or(|v| v != 0),
-            melt: read("meltSnow").is_none_or(|v| v != 0),
-            snow_on_windows: read("snowOnWindows").is_none_or(|v| v != 0),
-            behind_windows: read("behindWindows").is_some_and(|v| v != 0),
-            behind_taskbar: read("behindTaskbar").is_some_and(|v| v != 0),
-            show_in_screenshots: read("showInScreenshots").is_some_and(|v| v != 0),
-            welcomed: read("welcomed").is_some_and(|v| v != 0),
-            icicles: read("icicles").is_none_or(|v| v != 0),
-            warm_glow: read("warmGlow").is_none_or(|v| v != 0),
-            puff: read("puff").is_some_and(|v| v != 0),
-            quiet_on_calls: read("quietOnCalls").is_none_or(|v| v != 0),
-            ambience: read("ambience").unwrap_or(0).min(3),
-            volume: read("ambienceVolume").unwrap_or(50).clamp(5, 100),
-            login_offered: read("loginOffered").is_some_and(|v| v != 0),
-            auto_update: read("autoUpdate").is_none_or(|v| v != 0),
-            over_full_screen: read("overFullScreen").is_some_and(|v| v != 0),
-            autumn: read("autumn").is_some_and(|v| v != 0),
-            rain: read("rain").is_some_and(|v| v != 0),
-            max_performance: read("maxPerformance").is_some_and(|v| v != 0),
-            petals: read("petals").is_some_and(|v| v != 0),
-            hail: read("hail").is_some_and(|v| v != 0),
-            mix_rain: read("mixRain").is_some_and(|v| v != 0),
-            deep_interaction: read("deepInteraction").is_some_and(|v| v != 0),
-            hotkeys: read("hotkeys").is_none_or(|v| v != 0),
-            blizzard: read("blizzard").is_none_or(|v| v != 0),
-            fog: read("fog").is_some_and(|v| v != 0),
-            stars: read("stars").is_none_or(|v| v != 0),
-            garland: read("garland").is_some_and(|v| v != 0),
-            frost: read("frost").is_none_or(|v| v != 0),
-            creatures: read("creatures").is_none_or(|v| v != 0),
-            words: read("words").is_some_and(|v| v != 0),
-            sound_effects: read("soundEffects").is_none_or(|v| v != 0),
-            battery_saver: read("batterySaver").is_some_and(|v| v != 0),
-            live_weather: read("liveWeather").is_some_and(|v| v != 0),
-            opacity: read("opacity").unwrap_or(100).clamp(15, 100),
-            seen_version: read("seenVersion").unwrap_or(0),
+            intensity: read(w!("intensity")).map(|v| v.clamp(0, 100)).or(stop.map(|i| [0, 25, 50, 75, 50][i])).unwrap_or(if calm { 25 } else { 50 }),
+            ground: read(w!("settleGround")).map_or(settled, |v| v != 0),
+            melt: read(w!("meltSnow")).is_none_or(|v| v != 0),
+            snow_on_windows: settled && read(w!("snowOnWindows")).is_none_or(|v| v != 0),
+            behind_windows: read(w!("behindWindows")).is_some_and(|v| v != 0),
+            over_full_screen: read(w!("showOverFullScreen")).is_some_and(|v| v != 0),
+            behind_taskbar: read(w!("behindTaskbar")).is_some_and(|v| v != 0),
+            show_in_screenshots: read(w!("showInScreenshots")).is_some_and(|v| v != 0),
+            // Before Deep Interaction meant the wallpaper's depth, it meant snow settling on a selection on the desktop.
+            selection: read(w!("settleSelection")).or(read(w!("deepInteraction"))).is_some_and(|v| v != 0),
+            wallpaper: read(w!("settleWallpaper")).is_some_and(|v| v != 0),
+            depth: read(w!("wallpaperDepth")).is_none_or(|v| v != 0),
+            picture_level: read(w!("pictureLevel")).map_or(0, |v| v.min(2000)),
+            fight_throws: read(w!("fightThrows")).map_or(0, |v| v.min(3)),
+            welcomed,
+            installed_at,
+            halloween: Choice { on: read(w!("halloweenOn")).is_some_and(|v| v != 0), skipped: read(w!("halloweenSkipped")).unwrap_or(0) },
+            new_year: Choice { on: read(w!("newYearOn")).is_some_and(|v| v != 0), skipped: read(w!("newYearSkipped")).unwrap_or(0) },
+            max_performance: read(w!("performance")).is_some_and(|v| v == 1),
+            opacity: read(w!("fallingOpacity")).map_or(100, |v| v.clamp(10, 100)),
+            picked: Picked::load(read(w!("mode")), read(w!("autumn")), read(w!("mixed")), [read(w!("mix0")), read(w!("mix1"))]),
         }
     }
 
     pub fn save(&self) {
-        let snowfall = Snowfall::ALL.iter().position(|&s| s == self.snowfall).unwrap_or(2);
-        let mut values = Values::new();
-        for (name, value) in [
-            ("snowfall", snowfall as u32),
-            ("accumulate", self.accumulate as u32),
-            ("meltSnow", self.melt as u32),
-            ("snowOnWindows", self.snow_on_windows as u32),
-            ("behindWindows", self.behind_windows as u32),
-            ("behindTaskbar", self.behind_taskbar as u32),
-            ("showInScreenshots", self.show_in_screenshots as u32),
-            ("welcomed", self.welcomed as u32),
-            ("icicles", self.icicles as u32),
-            ("warmGlow", self.warm_glow as u32),
-            ("puff", self.puff as u32),
-            ("quietOnCalls", self.quiet_on_calls as u32),
-            ("ambience", self.ambience),
-            ("ambienceVolume", self.volume),
-            ("loginOffered", self.login_offered as u32),
-            ("autoUpdate", self.auto_update as u32),
-            ("overFullScreen", self.over_full_screen as u32),
-            ("autumn", self.autumn as u32),
-            ("rain", self.rain as u32),
-            ("maxPerformance", self.max_performance as u32),
-            ("petals", self.petals as u32),
-            ("hail", self.hail as u32),
-            ("mixRain", self.mix_rain as u32),
-            ("deepInteraction", self.deep_interaction as u32),
-            ("hotkeys", self.hotkeys as u32),
-            ("blizzard", self.blizzard as u32),
-            ("fog", self.fog as u32),
-            ("stars", self.stars as u32),
-            ("garland", self.garland as u32),
-            ("frost", self.frost as u32),
-            ("creatures", self.creatures as u32),
-            ("words", self.words as u32),
-            ("soundEffects", self.sound_effects as u32),
-            ("batterySaver", self.battery_saver as u32),
-            ("liveWeather", self.live_weather as u32),
-            ("opacity", self.opacity),
-            ("seenVersion", self.seen_version),
-        ] {
-            write(&HSTRING::from(name), value);
-            values.insert(name.to_string(), value);
-        }
-        values.insert("openAtLogin".to_string(), opens_at_login() as u32);
-        if let Err(error) = store::write(&values) {
-            crate::log!("settings file not saved: {error}");
-        }
+        write(w!("intensity"), self.intensity);
+        write(w!("settleGround"), self.ground as u32);
+        write(w!("meltSnow"), self.melt as u32);
+        write(w!("snowOnWindows"), self.snow_on_windows as u32);
+        write(w!("behindWindows"), self.behind_windows as u32);
+        write(w!("showOverFullScreen"), self.over_full_screen as u32);
+        write(w!("behindTaskbar"), self.behind_taskbar as u32);
+        write(w!("showInScreenshots"), self.show_in_screenshots as u32);
+        write(w!("settleSelection"), self.selection as u32);
+        write(w!("settleWallpaper"), self.wallpaper as u32);
+        write(w!("wallpaperDepth"), self.depth as u32);
+        write(w!("pictureLevel"), self.picture_level);
+        write(w!("welcomed"), self.welcomed as u32);
+        write(w!("installedAt"), self.installed_at);
+        write(w!("halloweenOn"), self.halloween.on as u32);
+        write(w!("halloweenSkipped"), self.halloween.skipped);
+        write(w!("newYearOn"), self.new_year.on as u32);
+        write(w!("newYearSkipped"), self.new_year.skipped);
+        write(w!("mode"), modes::number(self.picked.mode));
+        write(w!("mixed"), self.picked.mixed as u32);
+        write(w!("mix0"), modes::number(self.picked.mix[0]));
+        write(w!("mix1"), modes::number(self.picked.mix[1]));
+        write(w!("autumn"), (self.picked.mode == Mode::Autumn) as u32);
+        write(w!("performance"), self.max_performance as u32);
+        write(w!("fallingOpacity"), self.opacity);
     }
 }
 
-/// Snowpuff installed again after being removed: the registry is empty but the settings file remains.
-/// Open at Login, which uninstalling took away, comes back as the file remembers it.
-pub fn restore_after_reinstall() {
-    if read(&HSTRING::from("loginOffered")).is_some() {
-        return;
-    }
-    let Some(saved) = store::read() else { return };
-    if let Some(&on) = saved.get("openAtLogin") {
-        let status = set_opens_at_login(on != 0);
-        crate::log!("open at login restored from the settings file: {} ({status:?})", on != 0);
-    }
+/// Keeps the snowballs thrown on their own: the menu's copy of the settings, saved whole, never hears of them.
+pub fn keep_fight_throws(count: u32) {
+    write(w!("fightThrows"), count);
 }
 
 pub fn opens_at_login() -> bool {
+    if crate::store::packaged() {
+        return crate::store::opens_at_login();
+    }
     let mut buffer = [0u16; 1024];
     let mut size = (buffer.len() * 2) as u32;
     let status =
@@ -198,15 +153,37 @@ pub fn opens_at_login() -> bool {
         return false;
     }
     let length = buffer.iter().position(|&c| c == 0).unwrap_or(0);
-    command().is_some_and(|command| command[..command.len() - 1] == buffer[..length])
+    command().is_some_and(|command| command[..command.len() - 1] == buffer[..length]) && !startup_disabled()
+}
+
+/// Whether the system's startup list has Snowpuff switched off: its record's first byte is odd then.
+fn startup_disabled() -> bool {
+    let mut record = [0u8; 64];
+    let mut size = record.len() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            STARTUP_APPROVED,
+            RUN_VALUE,
+            RRF_RT_REG_BINARY,
+            None,
+            Some(record.as_mut_ptr().cast::<c_void>()),
+            Some(&mut size),
+        )
+    };
+    status == ERROR_SUCCESS && size > 0 && record[0] & 1 == 1
 }
 
 pub fn set_opens_at_login(on: bool) -> WIN32_ERROR {
+    if crate::store::packaged() {
+        return crate::store::set_opens_at_login(on);
+    }
     unsafe {
         if !on {
             return RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, RUN_VALUE);
         }
         let Some(command) = command() else { return WIN32_ERROR(1) };
+        let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, STARTUP_APPROVED, RUN_VALUE);
         RegSetKeyValueW(HKEY_CURRENT_USER, RUN, RUN_VALUE, REG_SZ.0, Some(command.as_ptr().cast()), (command.len() * 2) as u32)
     }
 }
@@ -217,7 +194,7 @@ fn command() -> Option<Vec<u16>> {
     Some(format!("\"{}\"", path.display()).encode_utf16().chain([0]).collect())
 }
 
-fn read(name: &HSTRING) -> Option<u32> {
+pub(crate) fn read(name: PCWSTR) -> Option<u32> {
     let mut value = 0u32;
     let mut size = 4u32;
     let status =
@@ -225,7 +202,11 @@ fn read(name: &HSTRING) -> Option<u32> {
     (status == ERROR_SUCCESS).then_some(value)
 }
 
-fn write(name: &HSTRING, value: u32) {
+fn now() -> u32 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
+}
+
+pub(crate) fn write(name: PCWSTR, value: u32) {
     unsafe {
         let _ = RegSetKeyValueW(HKEY_CURRENT_USER, KEY, name, REG_DWORD.0, Some((&raw const value).cast::<c_void>()), 4);
     }

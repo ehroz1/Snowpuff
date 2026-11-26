@@ -14,19 +14,25 @@
 	<string>app.snowpuff.Snowpuff</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
-	<key>CFBundleLocalizations</key>
-	<array>
-		<string>en</string>
-		<string>ru</string>
-	</array>
 	<key>CFBundleName</key>
 	<string>Snowpuff</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.3.2</string>
+	<string>1.4.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.snowpuff.Snowpuff.invite</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>snowpuff</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>9</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.lifestyle</string>
 	<key>LSMinimumSystemVersion</key>
@@ -36,13 +42,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>© 2026 Snowpuff. Based on Snowhush © 2026 Mykhailo Bezruchko (MIT).</string>
-	<key>NSLocationUsageDescription</key>
-	<string>Weather Outside makes it snow or rain as it does where you are. The location is rounded and only used to ask open-meteo.com for the weather.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Weather Outside makes it snow or rain as it does where you are. The location is rounded and only used to ask open-meteo.com for the weather.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Snowpuff listens for a puff of breath so you can blow on the snow. Nothing is recorded or sent anywhere.</string>
+	<string>© 2026 Snowpuff (ehroz.pro). Based on Snowhush © 2026 Mykhailo Bezruchko, PolyForm Noncommercial 1.0.0.</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 </dict>

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -10,14 +10,15 @@ use windows::core::{PCWSTR, Result, w};
 
 use snowpuff::card::{self, Card, Content, Hits, MARGIN};
 use snowpuff_core::geometry::V2;
+use snowpuff_core::text::tr;
 
 use crate::log;
-use snowpuff::text::tr;
 use crate::snow::Piece;
 
 const CLASS: PCWSTR = w!("SnowpuffWelcome");
 const WIDTH: f32 = 440.0;
 const HEIGHT: f32 = 430.0;
+const TITLE: &str = "IT'S SNOWING\nON YOUR DESKTOP.";
 /// Spacing of the pieces that fly off.
 const CELL: f32 = 6.0;
 /// Spacing of the crumbling front: fine enough that its edge reads as a line, not as squares.
@@ -94,8 +95,10 @@ fn open() -> Result<()> {
     REGISTER.call_once(|| {
         let _ = card::register(CLASS, Some(procedure));
     });
-    let (scale, origin) = card::placement(WIDTH, HEIGHT);
-    let card = Card::new(WIDTH, HEIGHT, scale)?;
+    let (scale, _) = card::placement(WIDTH, HEIGHT);
+    let height = Card::new(WIDTH, HEIGHT, scale)?.fitting_height(&[content(false)], HEIGHT)?;
+    let (scale, origin) = card::placement(WIDTH, height);
+    let card = Card::new(WIDTH, height, scale)?;
     let (pixels, hits) = card.paint(&content(false))?;
     unsafe {
         let window = CreateWindowExW(
@@ -121,18 +124,9 @@ fn open() -> Result<()> {
 }
 
 fn content(pressed: bool) -> Content<'static> {
-    Content {
-        icon: 112.0,
-        title: tr("IT'S SNOWING\nON YOUR DESKTOP.", "НА РАБОЧЕМ СТОЛЕ\nИДЁТ СНЕГ."),
-        title_size: 34.0,
-        body: tr(
-            "Snowpuff lives in the system tray. Move the mouse through a drift to sweep it, jerk a window to knock its icicles off, or turn on the microphone and blow on the snow.",
-            "Snowpuff живёт в области уведомлений. Поводи мышкой по сугробу, дёрни окно, чтобы сбить сосульки, или включи микрофон и подуй на снег.",
-        ),
-        button: tr("GET STARTED", "НАЧАТЬ"),
-        pressed,
-        closable: false,
-    }
+    static BUTTON: OnceLock<String> = OnceLock::new();
+    let button = BUTTON.get_or_init(|| tr("welcome.start").to_uppercase());
+    Content { icon: 112.0, title: TITLE, title_size: 34.0, body: tr("welcome.windows"), button, pressed, closable: false }
 }
 
 unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -177,6 +171,17 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             tick();
             LRESULT(0)
         }
+        WM_CLOSE => {
+            get_started();
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            if WELCOME.with_borrow(|welcome| welcome.as_ref().is_some_and(|welcome| welcome.window == window)) {
+                WELCOME.set(None);
+                finish(true);
+            }
+            LRESULT(0)
+        }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
 }
@@ -191,7 +196,7 @@ fn get_started() {
         let (base, _) = welcome.card.paint(&content(false)).ok()?;
         let mut rect = RECT::default();
         unsafe { GetWindowRect(welcome.window, &mut rect).ok()? };
-        welcome.crumble = Some(Crumble::new(base, welcome.card.size, welcome.card.scale, POINT { x: rect.left, y: rect.top }));
+        welcome.crumble = Some(Crumble::new(base, welcome.card.size, welcome.card.height, welcome.card.scale, POINT { x: rect.left, y: rect.top }));
         unsafe { SetTimer(Some(welcome.window), TIMER, 15, None) };
         Some(())
     });
@@ -273,16 +278,16 @@ impl Welcome {
 }
 
 impl Crumble {
-    fn new(base: Vec<u8>, size: (i32, i32), scale: f32, origin: POINT) -> Crumble {
+    fn new(base: Vec<u8>, size: (i32, i32), card_height: f32, scale: f32, origin: POINT) -> Crumble {
         let (width, height) = (size.0 as usize, size.1 as usize);
         let columns = (WIDTH / GRAIN).ceil() as usize;
-        let rows = (HEIGHT / GRAIN).ceil() as usize;
+        let rows = (card_height / GRAIN).ceil() as usize;
         let mut grid = vec![0.0f32; columns * rows];
         for row in 0..rows {
             for column in 0..columns {
                 let x = (column as f32 + 0.5) * GRAIN;
                 let y = (row as f32 + 0.5) * GRAIN;
-                grid[row * columns + column] = arrival(x, y) as f32;
+                grid[row * columns + column] = arrival(x, y, card_height) as f32;
             }
         }
         // Each pixel takes the front of the nearest point on the card, so the shadow goes with it.
@@ -303,7 +308,7 @@ impl Crumble {
 
         let mut cells = Vec::new();
         let mut y = CELL / 2.0;
-        while y < HEIGHT {
+        while y < card_height {
             let mut x = CELL / 2.0;
             while x < WIDTH {
                 let px = (((MARGIN + x) * scale) as usize).min(width - 1);
@@ -312,7 +317,12 @@ impl Crumble {
                 let alpha = base[i + 3] as f32 / 255.0;
                 if alpha > 0.1 {
                     let channel = |c: u8| (c as f32 / 255.0 / alpha).min(1.0);
-                    cells.push(Cell { x, y, color: [channel(base[i + 2]), channel(base[i + 1]), channel(base[i])], delay: arrival(x, y) });
+                    cells.push(Cell {
+                        x,
+                        y,
+                        color: [channel(base[i + 2]), channel(base[i + 1]), channel(base[i])],
+                        delay: arrival(x, y, card_height),
+                    });
                 }
                 x += CELL;
             }
@@ -368,10 +378,10 @@ impl Crumble {
 
 /// The front sweeps down in about half a second, held back here and there by smooth noise
 /// and roughened by a fine grain so its edge looks like crumbling snow. `x` and `y` are DIPs from the card's top left.
-fn arrival(x: f32, y: f32) -> f64 {
-    let from_top = y as f64 / HEIGHT as f64;
+fn arrival(x: f32, y: f32, height: f32) -> f64 {
+    let from_top = y as f64 / height as f64;
     // The noise runs in the Mac's coordinates, up from the bottom, so the front looks the same.
-    let (x, y) = (x as f64, (HEIGHT - y) as f64);
+    let (x, y) = (x as f64, (height - y) as f64);
     let broad = value_noise(x / 46.0, y / 46.0) * 0.65 + value_noise(x / 15.0 + 7.3, y / 15.0 + 2.1) * 0.35;
     from_top * 0.5 + broad * 0.2 + hash((x * 1.7) as i64, (y * 1.7) as i64) * 0.035
 }

@@ -1,0 +1,29 @@
+# Builds Snowpuff from this checkout and installs it: cd linux/packaging && makepkg -si
+# Releases go to the AUR as snowpuff-bin instead, from aur/.
+pkgname=snowpuff
+pkgver=0.14.0
+pkgrel=1
+pkgdesc="Snow on your Wayland desktop, in KDE Plasma, Hyprland, Sway or niri: it settles on windows and parts around the cursor"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ehroz1/Snowpuff"
+license=('PolyForm-Noncommercial-1.0.0')
+depends=('libglvnd' 'wayland' 'gcc-libs' 'glibc')
+makedepends=('cargo')
+options=('!lto')
+
+_root="$(realpath "$startdir/../..")"
+
+build() {
+    cd "$_root/linux"
+    CARGO_TARGET_DIR="$srcdir/target" cargo build --release --locked
+}
+
+package() {
+    install -Dm755 "$srcdir/target/release/snowpuff" "$pkgdir/usr/bin/snowpuff"
+    install -Dm644 "$_root/linux/packaging/snowpuff.desktop" "$pkgdir/usr/share/applications/snowpuff.desktop"
+    install -Dm644 "$_root/windows/assets/icon-256.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/snowpuff.png"
+    install -Dm644 "$_root/site/assets/icon-512.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/snowpuff.png"
+    install -Dm644 "$_root/site/assets/icon-64.png" "$pkgdir/usr/share/icons/hicolor/64x64/apps/snowpuff.png"
+    install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$_root/Resources/ThirdParty/Notices.txt" "$pkgdir/usr/share/licenses/$pkgname/ThirdPartyNotices.txt"
+}

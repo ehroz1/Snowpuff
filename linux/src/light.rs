@@ -1,0 +1,207 @@
+//! The light the snow is drawn in: warmer at dawn and dusk, cooler at night, with shadows taking on the colour
+//! of the desktop picture along the bottom of each display, as on Windows.
+
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+use zbus::blocking::Connection;
+
+use snowpuff_core::{halloween, new_year};
+
+use crate::wallpaper::{Placement, Wallpaper};
+use crate::windows::Area;
+
+/// Clock-based rather than solar: close enough for mood, and needs no location.
+pub fn daylight() -> [f32; 3] {
+    let hour = hour();
+    let day = halloween::daylight_share(hour);
+    let golden = ((-((hour - 7.6) / 1.1).powi(2)).exp() + (-((hour - 18.6) / 1.2).powi(2)).exp()).min(1.0);
+    let night = [0.86, 0.89, 0.97];
+    let warm = [1.0, 0.965, 0.915];
+    std::array::from_fn(|i| {
+        let base = night[i] + (1.0 - night[i]) * day;
+        base + (warm[i] - base) * golden * 0.55
+    })
+}
+
+pub fn today() -> halloween::Today {
+    let (year, month, day, hour) = local_time().unwrap_or((0, 1, 1, 12.0));
+    halloween::Today::at(year, month, day, hour as u32)
+}
+
+/// The year the New Year's season began in, and whether it is the season.
+pub fn new_year_today() -> halloween::Today {
+    new_year::today(now())
+}
+
+/// The local time to the fraction of a second, for the New Year's countdown.
+pub fn now() -> new_year::LocalTime {
+    let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    unsafe {
+        let seconds = since.as_secs() as libc::time_t;
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&seconds, &mut local).is_null() {
+            return new_year::LocalTime::default();
+        }
+        new_year::LocalTime {
+            year: local.tm_year as u32 + 1900,
+            month: local.tm_mon as u32 + 1,
+            day: local.tm_mday as u32,
+            hour: local.tm_hour as u32,
+            minute: local.tm_min as u32,
+            second: local.tm_sec as f64 + since.subsec_nanos() as f64 / 1e9,
+        }
+    }
+}
+
+/// How far into Halloween night it is while Halloween is on.
+pub fn night(on: bool) -> f32 {
+    halloween::night(on)
+}
+
+/// The hour the light follows: the clock's, or one being previewed.
+fn hour() -> f32 {
+    halloween::previewed_hour().unwrap_or_else(|| local_time().map_or(12.0, |(_, _, _, hour)| hour))
+}
+
+/// The local year, the month counted from 1, the day of the month and the hour.
+fn local_time() -> Option<(u32, u32, u32, f32)> {
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut local).is_null() {
+            return None;
+        }
+        Some((local.tm_year as u32 + 1900, local.tm_mon as u32 + 1, local.tm_mday as u32, local.tm_hour as f32 + local.tm_min as f32 / 60.0))
+    }
+}
+
+/// What a display shows behind its windows: a picture, and when it was last written, or a solid colour.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Backdrop {
+    Picture(PathBuf, Option<SystemTime>),
+    Color([f32; 3]),
+}
+
+/// Asks Plasma for each desktop's wallpaper, by where its display sits: x, y, the backdrop and, for a picture, how it
+/// is laid out.
+pub fn backdrops(connection: &Connection) -> Vec<(i32, i32, Backdrop, Option<Wallpaper>)> {
+    const SCRIPT: &str = r#"var lines = [];
+for (const d of desktops()) {
+    var g = screenGeometry(d.screen);
+    d.currentConfigGroup = ["Wallpaper", d.wallpaperPlugin, "General"];
+    lines.push([g.x, g.y, d.wallpaperPlugin, d.readConfig("Image"), d.readConfig("Color"), d.readConfig("FillMode"), g.width, g.height].join("\t"));
+}
+print(lines.join("\n"));"#;
+    let Ok(reply) = connection.call_method(Some("org.kde.plasmashell"), "/PlasmaShell", Some("org.kde.PlasmaShell"), "evaluateScript", &(SCRIPT,))
+    else {
+        return Vec::new();
+    };
+    let Ok(text) = reply.body().deserialize::<String>() else { return Vec::new() };
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let x = parts.next()?.parse().ok()?;
+            let y = parts.next()?.parse().ok()?;
+            let plugin = parts.next()?;
+            let image = parts.next().unwrap_or_default();
+            let color = parts.next().unwrap_or_default();
+            let fill_mode = parts.next().unwrap_or_default();
+            let size: Option<(f32, f32)> = parts.next().zip(parts.next()).and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
+            let (backdrop, wallpaper) = match plugin {
+                "org.kde.color" => (Backdrop::Color(parse_color(color)?), None),
+                _ => {
+                    let path = shown(PathBuf::from(image.strip_prefix("file://").unwrap_or(image)), size);
+                    if !path.is_file() {
+                        return None;
+                    }
+                    let modified = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
+                    let wallpaper = Wallpaper::new(path.clone(), Placement::plasma(fill_mode), parse_color(color).unwrap_or([0.0; 3]));
+                    (Backdrop::Picture(path, modified), wallpaper)
+                }
+            };
+            Some((x, y, backdrop, wallpaper))
+        })
+        .collect()
+}
+
+/// The picture Plasma shows for a wallpaper: the file itself, or out of a wallpaper package, as Plasma's own come, the
+/// one of its sizes nearest the display's shape, the largest of those, from its dark variant under dark colours.
+fn shown(path: PathBuf, size: Option<(f32, f32)>) -> PathBuf {
+    if !path.is_dir() {
+        return path;
+    }
+    let contents = path.join("contents");
+    let dark = contents.join("images_dark");
+    let folder = if dark.is_dir() && crate::chores::plasma_dark() { dark } else { contents.join("images") };
+    let shape = size.filter(|(w, h)| *w > 0.0 && *h > 0.0).map_or(16.0 / 9.0, |(w, h)| w / h);
+    let pictures = std::fs::read_dir(&folder).into_iter().flatten().flatten().filter_map(|entry| {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stem = name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem);
+        let (w, h) = stem.split_once('x')?;
+        let (w, h): (f32, f32) = (w.parse().ok()?, h.parse().ok()?);
+        Some(((w / h / shape).ln().abs(), w * h, entry.path()))
+    });
+    pictures.min_by(|a, b| a.0.total_cmp(&b.0).then(b.1.total_cmp(&a.1))).map_or(path, |(_, _, picture)| picture)
+}
+
+/// A display's backdrop, by where the display sits, with the tint it gives the shadows.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Shade {
+    pub x: i32,
+    pub y: i32,
+    /// The output it is on, where it is known by that rather than by where the display sits; `*` for every output.
+    pub output: Option<String>,
+    pub backdrop: Backdrop,
+    pub tint: Option<[f32; 4]>,
+    /// The picture as it is laid out, for the snow that lies in it.
+    pub wallpaper: Option<Wallpaper>,
+}
+
+/// The shade of the display named `name` with these bounds.
+pub fn shade_of<'a>(shades: &'a [Shade], name: &str, bounds: &Area) -> Option<&'a Shade> {
+    shades
+        .iter()
+        .find(|shade| shade.output.as_deref() == Some(name))
+        .or_else(|| shades.iter().find(|shade| shade.output.is_none() && shade.x as f64 == bounds.x && shade.y as f64 == bounds.y))
+        .or_else(|| shades.iter().find(|shade| shade.output.as_deref() == Some("*")))
+}
+
+/// The backdrop's average colour along the bottom quarter, brought to the brightness of snow in shade.
+pub fn tint(backdrop: &Backdrop) -> Option<[f32; 4]> {
+    let average = match backdrop {
+        Backdrop::Picture(path, _) => average(path)?,
+        Backdrop::Color(color) => *color,
+    };
+    let luminance = average[0] * 0.2126 + average[1] * 0.7152 + average[2] * 0.0722;
+    let shade = 0.775 / luminance.max(0.04);
+    Some([(average[0] * shade).min(1.0), (average[1] * shade).min(1.0), (average[2] * shade).min(1.0), 0.35])
+}
+
+fn average(path: &PathBuf) -> Option<[f32; 3]> {
+    let picture = image::open(path).ok()?.thumbnail(64, 64).to_rgb8();
+    let (width, height) = picture.dimensions();
+    let rows = (height * 3 / 4)..height;
+    let mut sum = [0.0f32; 3];
+    let mut count = 0.0f32;
+    for y in rows {
+        for x in 0..width {
+            let pixel = picture.get_pixel(x, y);
+            for i in 0..3 {
+                sum[i] += pixel[i] as f32 / 255.0;
+            }
+            count += 1.0;
+        }
+    }
+    (count > 0.0).then(|| sum.map(|channel| channel / count))
+}
+
+/// Plasma writes a colour as "r,g,b" or "#rrggbb".
+fn parse_color(text: &str) -> Option<[f32; 3]> {
+    if let Some(hex) = text.strip_prefix('#') {
+        let value = u32::from_str_radix(hex.get(hex.len().checked_sub(6)?..)?, 16).ok()?;
+        return Some([(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff].map(|c| c as f32 / 255.0));
+    }
+    let channels: Vec<f32> = text.split(',').filter_map(|part| part.trim().parse::<f32>().ok()).collect();
+    (channels.len() >= 3).then(|| [channels[0] / 255.0, channels[1] / 255.0, channels[2] / 255.0])
+}
